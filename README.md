@@ -127,6 +127,12 @@ The web app lets people:
 - preview generated HTML output inside the web app and open generated files from there
 - open the local launcher in a browser automatically
 
+The app also tries to be conservative with Spotify API usage now:
+
+- it throttles Spotify Web API calls slightly instead of bursting them all at once
+- it honors Spotify `429` backoff windows when they are short enough to retry automatically
+- it avoids some unnecessary repeat Spotify lookups when a song already has a Spotify URL or URI
+
 ### 4. Create a Spotify app
 
 You need your own Spotify developer app so the script can authenticate to your account:

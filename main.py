@@ -9,6 +9,8 @@ import re
 import string
 import sys
 import tempfile
+import threading
+import time
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -35,6 +37,10 @@ DEFAULT_PUBLIC_DISCOVERY_MODE = "hybrid"
 SPOTIFY_PUBLIC_TRACK_API_BLOCKED = False
 YOUTUBE_SEARCH_RESULT_LIMIT = 20
 SPOTIFY_MATCH_CACHE = {}
+SPOTIFY_MIN_INTERVAL_SECONDS = 0.2
+SPOTIFY_MAX_RETRIES = 4
+SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS = 60
+CURRENT_USER_PROFILE = None
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -79,6 +85,88 @@ class SecureTokenCacheHandler(CacheHandler):
             self.cache_path.unlink()
         except FileNotFoundError:
             pass
+
+
+class RateLimitedSpotifyClient:
+    """Throttle Spotify API calls and honor Retry-After on 429 responses."""
+
+    def __init__(self, client):
+        self._client = client
+        self._lock = threading.Lock()
+        self._next_request_time = 0.0
+
+    def _reserve_request_slot(self):
+        with self._lock:
+            now = time.monotonic()
+            wait_seconds = max(0.0, self._next_request_time - now)
+            if wait_seconds:
+                time.sleep(wait_seconds)
+            self._next_request_time = time.monotonic() + SPOTIFY_MIN_INTERVAL_SECONDS
+
+    def _extract_retry_after_seconds(self, error):
+        headers = getattr(error, "headers", {}) or {}
+        retry_after = headers.get("Retry-After") or headers.get("retry-after")
+        if retry_after:
+            try:
+                return int(float(retry_after))
+            except ValueError:
+                pass
+
+        retry_match = re.search(r"Retry will occur after:\s*(\d+)\s*s", str(error))
+        if retry_match:
+            return int(retry_match.group(1))
+
+        return None
+
+    def _call_with_rate_limit(self, method, *args, **kwargs):
+        attempt = 0
+        while True:
+            self._reserve_request_slot()
+            try:
+                return method(*args, **kwargs)
+            except spotipy.exceptions.SpotifyException as error:
+                attempt += 1
+                retry_after_seconds = self._extract_retry_after_seconds(error)
+                http_status = getattr(error, "http_status", None)
+
+                if http_status == 429 and attempt <= SPOTIFY_MAX_RETRIES:
+                    if retry_after_seconds is None:
+                        retry_after_seconds = min(2 ** attempt, 10)
+
+                    if retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
+                        print(
+                            "Spotify rate-limited this run for too long to auto-retry "
+                            f"({retry_after_seconds} seconds)."
+                        )
+                        raise
+
+                    print(
+                        "Spotify rate limit reached. Waiting "
+                        f"{retry_after_seconds} second(s) before retrying..."
+                    )
+                    time.sleep(retry_after_seconds)
+                    continue
+
+                if http_status in {500, 502, 503} and attempt <= SPOTIFY_MAX_RETRIES:
+                    backoff_seconds = min(2 ** attempt, 10)
+                    print(
+                        f"Spotify returned HTTP {http_status}. Retrying in "
+                        f"{backoff_seconds} second(s)..."
+                    )
+                    time.sleep(backoff_seconds)
+                    continue
+
+                raise
+
+    def __getattr__(self, name):
+        attribute = getattr(self._client, name)
+        if not callable(attribute):
+            return attribute
+
+        def wrapped(*args, **kwargs):
+            return self._call_with_rate_limit(attribute, *args, **kwargs)
+
+        return wrapped
 
 
 def ensure_private_directory(path):
@@ -210,6 +298,7 @@ def decorate_source_for_visibility(cache_file, fetcher, description, visibility_
 
 
 def create_spotify_client():
+    global CURRENT_USER_PROFILE
     print("Spotify credentials are read from environment variables when available.")
     print("If they are not set, this script will use saved local app settings when available or ask for them.")
 
@@ -251,7 +340,7 @@ def create_spotify_client():
             open_browser=True,
             cache_handler=cache_handler,
         )
-        return spotipy.Spotify(auth_manager=auth_manager)
+        return RateLimitedSpotifyClient(spotipy.Spotify(auth_manager=auth_manager))
 
     spotify_client = build_client()
 
@@ -280,6 +369,7 @@ def create_spotify_client():
         sys.exit(1)
 
     display_name = user.get("display_name") or user.get("id") or "unknown user"
+    CURRENT_USER_PROFILE = user
     print(f"Successfully authenticated as {display_name}")
     return spotify_client
 
@@ -853,6 +943,9 @@ def find_youtube_url(song):
 
 
 def find_spotify_url(song):
+    if song.get('spotify_url'):
+        return song.get('spotify_url'), song.get('spotify_found_exact_track', True)
+
     spotify_match = resolve_song_on_spotify(song)
     if not spotify_match:
         return None, False
@@ -861,6 +954,9 @@ def find_spotify_url(song):
 
 
 def find_spotify_track_for_song(song):
+    if song.get('spotify_uri'):
+        return song['spotify_uri']
+
     if song.get('spotify_url'):
         spotify_url = song['spotify_url']
         track_id = spotify_url.rstrip('/').split('/')[-1].split('?')[0]
@@ -1548,6 +1644,7 @@ def search_spotify_tracks_by_keywords(keywords, max_songs):
                 'title': track_name,
                 'artists': artists,
                 'spotify_url': track.get('external_urls', {}).get('spotify'),
+                'spotify_uri': track.get('uri'),
                 'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')),
             })
 
@@ -1709,13 +1806,6 @@ def fetch_songs_from_public_playlists_by_keywords(
 
 
 def create_spotify_playlist(selected_songs):
-    try:
-        user = sp.current_user()
-        user_id = user['id']
-    except spotipy.exceptions.SpotifyException as e:
-        print(f"Error fetching user ID: {e}")
-        return
-
     # Prompt for playlist name
     playlist_name = input("Enter a name for your new playlist: ").strip()
     if not playlist_name:
@@ -1741,6 +1831,7 @@ def create_spotify_playlist(selected_songs):
     except spotipy.exceptions.SpotifyException as e:
         print(f"Error creating playlist: {e}")
         if getattr(e, "http_status", None) == 403:
+            user_id = (CURRENT_USER_PROFILE or {}).get('id', 'unknown')
             print("Spotify rejected playlist creation with HTTP 403.")
             print("The most common causes are:")
             print("- the cached token was authorized without playlist-write scopes")
@@ -1749,6 +1840,12 @@ def create_spotify_playlist(selected_songs):
             print("This script requests playlist-modify-private and now creates playlists through the current-user endpoint.")
             print("Delete ~/.spotify-scripts/token_cache.json and run the script again to force a fresh Spotify consent flow.")
             print(f"Authenticated user during this run: {user_id}")
+        if getattr(e, "http_status", None) == 429:
+            print(
+                "Spotify is still rate-limiting playlist creation after the built-in backoff. "
+                "Wait a bit before trying again, or reduce the number of Spotify-heavy features "
+                "you run back-to-back."
+            )
         return
 
     # Add tracks to the playlist in batches of up to 100
@@ -1759,6 +1856,11 @@ def create_spotify_playlist(selected_songs):
         print(f"Added {len(track_uris)} tracks to '{playlist_name}'.")
     except spotipy.exceptions.SpotifyException as e:
         print(f"Error adding tracks to playlist: {e}")
+        if getattr(e, "http_status", None) == 429:
+            print(
+                "Spotify rate-limited the playlist add step even after retries. "
+                "Try again after a short pause."
+            )
 
 def calculate_max_tracks_per_playlist(max_playlists, max_songs):
     """
