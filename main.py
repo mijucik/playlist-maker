@@ -180,6 +180,15 @@ def get_playlist_tracks(playlist_id, playlist_name):
     return tracks
 
 
+def extract_track_from_playlist_item(item):
+    track = item.get('track') or item.get('item')
+    if not isinstance(track, dict):
+        return None
+    if track.get('type') and track.get('type') != 'track':
+        return None
+    return track
+
+
 def fetch_current_user_playlists(progress_label):
     playlists = []
     results = sp.current_user_playlists(limit=50)
@@ -200,7 +209,7 @@ def fetch_current_user_playlists(progress_label):
 def build_song_list_from_tracks(all_tracks):
     song_list = []
     for item in tqdm(all_tracks, desc='Processing tracks', unit='track'):
-        track = item.get('track')
+        track = extract_track_from_playlist_item(item)
         if track:
             track_name = track.get('name') or 'Unknown Title'
             track_artists = track.get('artists', [])
@@ -423,44 +432,39 @@ def fetch_and_cache_random_playlists_songs(cache_file, num_songs):
         random.shuffle(playlists)
 
         selected_playlists = []
-        total_songs_collected = 0
-        all_tracks = []
+        song_list = []
+        seen_song_keys = set()
 
         for playlist in playlists:
+            if len(song_list) >= num_songs:
+                break
+
             print(f"Fetching tracks from random playlist: {playlist['name']}")
             tracks = get_playlist_tracks(playlist['id'], playlist['name'])
-            if tracks:
-                all_tracks.extend(tracks)
-                selected_playlists.append(playlist)
-                total_songs_collected += len(tracks)
+            if not tracks:
+                continue
 
-                if total_songs_collected >= num_songs:
+            playlist_song_list = build_song_list_from_tracks(tracks)
+            if not playlist_song_list:
+                print(f"No usable songs found in playlist: {playlist['name']}")
+                continue
+
+            selected_playlists.append(playlist)
+
+            for song in playlist_song_list:
+                song_key = (song['title'], song['artists'])
+                if song_key in seen_song_keys:
+                    continue
+                seen_song_keys.add(song_key)
+                song_list.append(song)
+                if len(song_list) >= num_songs:
                     break
 
-        if not all_tracks:
+        if not song_list:
             print("No tracks found in the selected playlists.")
             return [], []
 
-        print(f"Total tracks fetched from random playlists: {len(all_tracks)}")
-
-        # Collect song names and artists
-        song_list = []
-        for item in all_tracks:
-            track = item.get('track')
-            if track:
-                track_name = track.get('name') or 'Unknown Title'
-                track_artists = track.get('artists', [])
-                artist_names = []
-                for artist in track_artists:
-                    if artist:
-                        name = artist.get('name')
-                        if isinstance(name, str) and name.strip():
-                            artist_names.append(name)
-                        else:
-                            artist_names.append('Unknown Artist')
-                artists = ', '.join(artist_names)
-                song_entry = {'title': track_name, 'artists': artists}
-                song_list.append(song_entry)
+        print(f"Total usable songs fetched from random playlists: {len(song_list)}")
 
         # Randomize the song list
         random.shuffle(song_list)
