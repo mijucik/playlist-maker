@@ -4,6 +4,7 @@ This project is a small command-line script that talks to Spotify and helps you:
 
 - pick random songs from your own playlists
 - pick from playlists named like `Rediscover - Jan 19th`
+- filter your own playlists by name using either plain text or a custom regex
 - pick from all of your saved playlists
 - pick from a random mix of your playlists
 - search public Spotify playlists by keywords or phrases
@@ -56,6 +57,7 @@ export SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
 ## Notes
 
 - `main.py` is the best entrypoint to use.
+- For most people, playlist-name `contains` matching is simpler than regex. Regex is available when you want more control.
 - The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
 - The old root-level `.cache` file was Spotipy's token cache format.
 # spotify-playlist-picker

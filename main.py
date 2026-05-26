@@ -148,131 +148,92 @@ def get_playlist_tracks(playlist_id, playlist_name):
     return tracks
 
 
-# Function to fetch songs from all playlists and update the cache
-def fetch_and_cache_all_songs(cache_file):
-    print("Starting to fetch and cache all songs...")
-    try:
-        # Fetch current user's playlists
-        playlists = []
-        results = sp.current_user_playlists(limit=50)
-        playlists.extend(results['items'])
-        total_playlists = results['total']
-        print(f"Total playlists found: {total_playlists}")
+def fetch_current_user_playlists(progress_label):
+    playlists = []
+    results = sp.current_user_playlists(limit=50)
+    playlists.extend(results['items'])
+    total_playlists = results['total']
+    print(f"Total playlists found: {total_playlists}")
 
-        # Handle pagination if more playlists exist
-        with tqdm(total=total_playlists, desc='Fetching all playlists', unit='playlist') as pbar:
+    with tqdm(total=total_playlists, desc=progress_label, unit='playlist') as pbar:
+        pbar.update(len(results['items']))
+        while results['next']:
+            results = sp.next(results)
+            playlists.extend(results['items'])
             pbar.update(len(results['items']))
-            while results['next']:
-                results = sp.next(results)
-                playlists.extend(results['items'])
-                pbar.update(len(results['items']))
 
-        # Retrieve tracks from all playlists
+    return playlists
+
+
+def build_song_list_from_tracks(all_tracks):
+    song_list = []
+    for item in tqdm(all_tracks, desc='Processing tracks', unit='track'):
+        track = item.get('track')
+        if track:
+            track_name = track.get('name') or 'Unknown Title'
+            track_artists = track.get('artists', [])
+            artist_names = []
+            for artist in track_artists:
+                if artist:
+                    name = artist.get('name')
+                    if isinstance(name, str) and name.strip():
+                        artist_names.append(name)
+                    else:
+                        artist_names.append('Unknown Artist')
+            artists = ', '.join(artist_names)
+            song_entry = {'title': track_name, 'artists': artists}
+            song_list.append(song_entry)
+    return song_list
+
+
+def write_song_cache(cache_file, song_list):
+    abs_cache_path = os.path.abspath(cache_file)
+    print(f"Writing {len(song_list)} songs to cache file: {abs_cache_path}")
+    with open(cache_file, 'w', encoding='utf-8') as f:
+        json.dump(song_list, f, ensure_ascii=False, indent=2)
+    print(f"Cache file '{abs_cache_path}' written successfully.")
+
+
+def fetch_and_cache_filtered_playlist_songs(cache_file, playlist_filter, filter_description, progress_label='Fetching playlists'):
+    print(f"Starting to fetch and cache songs for playlist filter: {filter_description}...")
+    try:
+        playlists = fetch_current_user_playlists(progress_label)
+        filtered_playlists = [playlist for playlist in playlists if playlist_filter(playlist)]
+        print(f"Playlists matching '{filter_description}': {len(filtered_playlists)}")
+
         all_tracks = []
-        for playlist in playlists:
+        for playlist in filtered_playlists:
             print(f"Fetching tracks from playlist: {playlist['name']}")
             tracks = get_playlist_tracks(playlist['id'], playlist['name'])
             all_tracks.extend(tracks)
 
         print(f"Total tracks fetched: {len(all_tracks)}")
-
-        # Collect song names and artists
-        song_list = []
-        for item in tqdm(all_tracks, desc='Processing tracks', unit='track'):
-            track = item.get('track')
-            if track:
-                track_name = track.get('name') or 'Unknown Title'
-                track_artists = track.get('artists', [])
-                artist_names = []
-                for artist in track_artists:
-                    if artist:
-                        name = artist.get('name')
-                        if isinstance(name, str) and name.strip():
-                            artist_names.append(name)
-                        else:
-                            artist_names.append('Unknown Artist')
-                artists = ', '.join(artist_names)
-                song_entry = {'title': track_name, 'artists': artists}
-                song_list.append(song_entry)
-
-        # Save song list to cache file
-        abs_cache_path = os.path.abspath(cache_file)
-        print(f"Writing {len(song_list)} songs to cache file: {abs_cache_path}")
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(song_list, f, ensure_ascii=False, indent=2)
-        print(f"Cache file '{abs_cache_path}' written successfully.")
-
+        song_list = build_song_list_from_tracks(all_tracks)
+        write_song_cache(cache_file, song_list)
         return song_list
     except Exception as e:
-        print(f"An error occurred in fetch_and_cache_all_songs: {e}")
+        print(f"An error occurred while fetching songs for playlist filter '{filter_description}': {e}")
         return []
+
+
+# Function to fetch songs from all playlists and update the cache
+def fetch_and_cache_all_songs(cache_file):
+    return fetch_and_cache_filtered_playlist_songs(
+        cache_file,
+        playlist_filter=lambda playlist: True,
+        filter_description='All playlists',
+        progress_label='Fetching all playlists',
+    )
 
 
 # Function to fetch songs from Rediscover playlists and update the cache
 def fetch_and_cache_rediscover_songs(cache_file):
-    print("Starting to fetch and cache Rediscover songs...")
-    try:
-        # Fetch current user's playlists
-        playlists = []
-        results = sp.current_user_playlists(limit=50)
-        playlists.extend(results['items'])
-        total_playlists = results['total']
-        print(f"Total playlists found: {total_playlists}")
-
-        # Handle pagination if more playlists exist
-        with tqdm(total=total_playlists, desc='Fetching playlists', unit='playlist') as pbar:
-            pbar.update(len(results['items']))
-            while results['next']:
-                results = sp.next(results)
-                playlists.extend(results['items'])
-                pbar.update(len(results['items']))
-
-        # Adjusted regex pattern to match playlists like "Rediscover - Jan 19th"
-        date_pattern = re.compile(r'^Rediscover\s-\s[A-Za-z]{3}\s\d{1,2}(st|nd|rd|th)$')
-
-        # Filter playlists matching the pattern
-        date_playlists = [plist for plist in playlists if date_pattern.match(plist['name'])]
-        print(f"Rediscover playlists found: {len(date_playlists)}")
-
-        # Retrieve tracks from the filtered playlists
-        all_tracks = []
-        for playlist in date_playlists:
-            print(f"Fetching tracks from Rediscover playlist: {playlist['name']}")
-            tracks = get_playlist_tracks(playlist['id'], playlist['name'])
-            all_tracks.extend(tracks)
-
-        print(f"Total tracks fetched from Rediscover playlists: {len(all_tracks)}")
-
-        # Collect song names and artists
-        song_list = []
-        for item in tqdm(all_tracks, desc='Processing tracks', unit='track'):
-            track = item.get('track')
-            if track:
-                track_name = track.get('name') or 'Unknown Title'
-                track_artists = track.get('artists', [])
-                artist_names = []
-                for artist in track_artists:
-                    if artist:
-                        name = artist.get('name')
-                        if isinstance(name, str) and name.strip():
-                            artist_names.append(name)
-                        else:
-                            artist_names.append('Unknown Artist')
-                artists = ', '.join(artist_names)
-                song_entry = {'title': track_name, 'artists': artists}
-                song_list.append(song_entry)
-
-        # Save song list to cache file
-        abs_cache_path = os.path.abspath(cache_file)
-        print(f"Writing {len(song_list)} songs to cache file: {abs_cache_path}")
-        with open(cache_file, 'w', encoding='utf-8') as f:
-            json.dump(song_list, f, ensure_ascii=False, indent=2)
-        print(f"Cache file '{abs_cache_path}' written successfully.")
-
-        return song_list
-    except Exception as e:
-        print(f"An error occurred in fetch_and_cache_rediscover_songs: {e}")
-        return []
+    date_pattern = re.compile(r'^Rediscover\s-\s[A-Za-z]{3}\s\d{1,2}(st|nd|rd|th)$', re.IGNORECASE)
+    return fetch_and_cache_filtered_playlist_songs(
+        cache_file,
+        playlist_filter=lambda playlist: bool(date_pattern.match(playlist['name'])),
+        filter_description='Rediscover preset',
+    )
 
 
 # Function to fetch songs from user-created playlists and update the cache
@@ -338,6 +299,72 @@ def fetch_and_cache_user_playlists_songs(cache_file):
     except Exception as e:
         print(f"An error occurred in fetch_and_cache_user_playlists_songs: {e}")
         return []
+
+
+def build_filtered_playlist_cache_file(filter_label):
+    safe_label = sanitize_filename(filter_label) or "custom_filter"
+    return f"song_cache_filtered_{safe_label}.json"
+
+
+def prompt_for_playlist_name_filter():
+    print("Choose how to match playlist names:")
+    print("1. Rediscover preset")
+    print("2. Playlist name contains text")
+    print("3. Custom regex")
+    filter_choice = input("Enter 1, 2, or 3: ").strip()
+
+    if filter_choice == '1':
+        return {
+            'cache_file': 'song_cache_rediscover.json',
+            'fetcher': fetch_and_cache_rediscover_songs,
+            'description': 'Rediscover Playlists',
+        }
+
+    if filter_choice == '2':
+        search_text = input("Enter text to look for in playlist names: ").strip()
+        if not search_text:
+            print("No text entered.")
+            return None
+
+        lowered_search_text = search_text.lower()
+        description = f"Playlists containing '{search_text}'"
+        cache_file = build_filtered_playlist_cache_file(f"contains_{search_text}")
+        return {
+            'cache_file': cache_file,
+            'fetcher': lambda selected_cache_file: fetch_and_cache_filtered_playlist_songs(
+                selected_cache_file,
+                playlist_filter=lambda playlist: lowered_search_text in playlist['name'].lower(),
+                filter_description=description,
+            ),
+            'description': description,
+        }
+
+    if filter_choice == '3':
+        regex_input = input("Enter a regex for playlist names: ").strip()
+        if not regex_input:
+            print("No regex entered.")
+            return None
+
+        try:
+            compiled_pattern = re.compile(regex_input, re.IGNORECASE)
+        except re.error as error:
+            print(f"Invalid regex: {error}")
+            return None
+
+        description = f"Playlists matching regex '{regex_input}'"
+        cache_file = build_filtered_playlist_cache_file(f"regex_{regex_input}")
+        return {
+            'cache_file': cache_file,
+            'fetcher': lambda selected_cache_file: fetch_and_cache_filtered_playlist_songs(
+                selected_cache_file,
+                playlist_filter=lambda playlist: bool(compiled_pattern.search(playlist['name'])),
+                filter_description=description,
+            ),
+            'description': description,
+        }
+
+    print("Invalid choice.")
+    return None
 
 
 # Function to fetch songs from random playlists
@@ -617,6 +644,7 @@ def print_project_summary():
     print("\nWhat this script does:")
     print("- Pulls songs from your Spotify playlists or from public playlists.")
     print("- Randomly picks one or more songs from that pool.")
+    print("- Can filter your own playlists by name using a preset, simple text, or regex.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
 
@@ -644,7 +672,7 @@ def main():
     # Ask the user which songs to use
     print("Choose the source of songs:")
     print("1. All playlists")
-    print("2. Rediscover playlists")
+    print("2. Filter your playlists by name")
     print("3. Your own playlists")
     print("4. Random saved playlists")
     print("5. Search public playlists by keywords/phrases")
@@ -661,9 +689,12 @@ def main():
         fetch_and_cache_songs = fetch_and_cache_all_songs
         source_description = 'All Playlists'
     elif source_choice == '2':
-        cache_file = 'song_cache_rediscover.json'
-        fetch_and_cache_songs = fetch_and_cache_rediscover_songs
-        source_description = 'Rediscover Playlists'
+        filter_config = prompt_for_playlist_name_filter()
+        if not filter_config:
+            return
+        cache_file = filter_config['cache_file']
+        fetch_and_cache_songs = filter_config['fetcher']
+        source_description = filter_config['description']
     elif source_choice == '3':
         cache_file = 'song_cache_user_playlists.json'
         fetch_and_cache_songs = fetch_and_cache_user_playlists_songs
