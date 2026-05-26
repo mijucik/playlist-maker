@@ -7,6 +7,9 @@ import random
 import re
 import string
 import sys
+import urllib.parse
+import urllib.request
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -461,6 +464,67 @@ def parse_keywords(input_string):
     return [kw.strip() for kw in keywords]
 
 
+def build_youtube_search_url(song):
+    query = f"{song['title']} {song['artists']}"
+    encoded_query = urllib.parse.quote_plus(query)
+    return f"https://www.youtube.com/results?search_query={encoded_query}"
+
+
+def find_youtube_url(song):
+    search_url = build_youtube_search_url(song)
+    request = urllib.request.Request(
+        search_url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            html = response.read().decode("utf-8", errors="ignore")
+    except Exception as error:
+        print(f"Could not search YouTube for {song['title']} by {song['artists']}: {error}")
+        return search_url, False
+
+    match = re.search(r'"videoRenderer"\s*:\s*\{\s*"videoId"\s*:\s*"([^"]+)"', html)
+    if match:
+        return f"https://www.youtube.com/watch?v={match.group(1)}", True
+
+    return search_url, False
+
+
+def attach_youtube_links(selected_songs):
+    print("Looking up YouTube links for the selected songs...")
+    for song in tqdm(selected_songs, desc='Finding YouTube links', unit='song'):
+        youtube_url, found_exact_video = find_youtube_url(song)
+        song['youtube_url'] = youtube_url
+        song['youtube_found_exact_video'] = found_exact_video
+
+
+def maybe_open_youtube_links(selected_songs):
+    open_choice = input("Do you want to open YouTube link(s) now? (yes/no): ").strip().lower()
+    if open_choice != 'yes':
+        return
+
+    if len(selected_songs) == 1:
+        urls_to_open = [selected_songs[0].get('youtube_url')]
+    else:
+        open_all_choice = input("Open all song links? (yes/no): ").strip().lower()
+        if open_all_choice == 'yes':
+            urls_to_open = [song.get('youtube_url') for song in selected_songs]
+        else:
+            urls_to_open = [selected_songs[0].get('youtube_url')]
+
+    opened_count = 0
+    for url in urls_to_open:
+        if url:
+            webbrowser.open(url)
+            opened_count += 1
+
+    print(f"Opened {opened_count} YouTube link(s) in your browser.")
+
+
 # Function to search public playlists by multiple keywords/phrases in combinations
 def search_public_playlists_by_keywords(keywords, max_playlists):
     playlists = []
@@ -807,10 +871,17 @@ def main():
         selected_songs = random.sample(song_list, num_songs)
         print(f"Selected {num_songs} songs.")
 
+    youtube_lookup_choice = input("Do you want to look for these songs on YouTube? (yes/no): ").strip().lower()
+    if youtube_lookup_choice == 'yes':
+        attach_youtube_links(selected_songs)
+
     if num_songs == 1:
         # Output the single song
         random_song = selected_songs[0]
         print(f"\nHere is your song from {source_description}:\n1. {random_song['title']} by {random_song['artists']}")
+        if random_song.get('youtube_url'):
+            label = "direct video" if random_song.get('youtube_found_exact_video') else "search results"
+            print(f"YouTube ({label}): {random_song['youtube_url']}")
         if source_choice == '4':
             print(f"Selected from playlists: {', '.join(selected_playlists)}")
     else:
@@ -824,6 +895,9 @@ def main():
                 song_title = song['title']
                 song_artists = song['artists']
                 print(f"{idx}. {song_title} by {song_artists}")
+                if song.get('youtube_url'):
+                    label = "direct video" if song.get('youtube_found_exact_video') else "search results"
+                    print(f"   YouTube ({label}): {song['youtube_url']}")
             if source_choice == '4':
                 print(f"\nSelected from playlists: {', '.join(selected_playlists)}")
 
@@ -869,6 +943,9 @@ def main():
                             song_title = song['title']
                             song_artists = song['artists']
                             f.write(f"{idx}. {song_title} by {song_artists}\n")
+                            if song.get('youtube_url'):
+                                label = "direct video" if song.get('youtube_found_exact_video') else "search results"
+                                f.write(f"   YouTube ({label}): {song['youtube_url']}\n")
                     print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
                 except Exception as e:
                     print(f"Failed to write to file '{abs_filepath}': {e}")
@@ -940,7 +1017,11 @@ def main():
                     for song in selected_songs:
                         song_title = song['title']
                         song_artists = song['artists']
-                        html_content += f"        <li>{song_title} by {song_artists}</li>\n"
+                        html_content += f"        <li>{song_title} by {song_artists}"
+                        if song.get('youtube_url'):
+                            label = "Watch on YouTube" if song.get('youtube_found_exact_video') else "Search on YouTube"
+                            html_content += f"""<br><a href="{song['youtube_url']}" target="_blank" rel="noopener noreferrer">{label}</a>"""
+                        html_content += "</li>\n"
 
                     html_content += """    </ol>
 </body>
@@ -976,6 +1057,9 @@ def main():
     create_playlist_choice = input("Do you want to create a Spotify playlist with these songs? (yes/no): ").strip().lower()
     if create_playlist_choice == 'yes':
         create_spotify_playlist(selected_songs)
+
+    if any(song.get('youtube_url') for song in selected_songs):
+        maybe_open_youtube_links(selected_songs)
 
 
 if __name__ == "__main__":

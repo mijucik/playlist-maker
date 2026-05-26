@@ -9,6 +9,7 @@ This project is a small command-line script that talks to Spotify and helps you:
 - pick from a random mix of your playlists
 - search public Spotify playlists by keywords or phrases
 - use a "Surprise me" mode driven by the local `emotions_genres.txt` list
+- optionally look up selected songs on YouTube and open the links
 - optionally export the results to `.txt` or `.html`
 - optionally create a new private Spotify playlist from the selected songs
 
