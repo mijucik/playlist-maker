@@ -62,5 +62,3 @@ export SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
 - For most people, playlist-name `contains` matching is simpler than regex. Regex is available when you want more control.
 - The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
 - The old root-level `.cache` file was Spotipy's token cache format.
-# spotify-playlist-picker
-# spotify-playlist-picker
