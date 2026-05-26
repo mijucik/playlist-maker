@@ -529,28 +529,43 @@ def maybe_open_youtube_links(selected_songs):
 def search_public_playlists_by_keywords(keywords, max_playlists):
     playlists = []
 
-    # Generate all combinations of keywords
+    # Generate unique single-keyword and pairwise search combinations.
     keyword_combinations = []
+    seen_combinations = set()
     for i in range(len(keywords)):
         for j in range(i, len(keywords)):
             if i != j:
-                keyword_combinations.append(f"{keywords[i]} {keywords[j]}")
-            keyword_combinations.append(keywords[i])
+                combined_keywords = f"{keywords[i]} {keywords[j]}"
+                if combined_keywords not in seen_combinations:
+                    keyword_combinations.append(combined_keywords)
+                    seen_combinations.add(combined_keywords)
+            if keywords[i] not in seen_combinations:
+                keyword_combinations.append(keywords[i])
+                seen_combinations.add(keywords[i])
 
     # Now rotate through combinations of keywords
     for keyword_combo in keyword_combinations:
         print(f"Searching for playlists with the combination: {keyword_combo}")
         results = sp.search(q=keyword_combo, type='playlist', limit=min(max_playlists, 50))  # Use min to ensure we don't exceed Spotify's 50 limit
+        playlist_results = results.get('playlists', {})
 
-        # Check if 'playlists' and 'items' exist in the response
-        if 'playlists' in results and 'items' in results['playlists']:
-            playlists.extend(results['playlists']['items'])
+        if 'items' in playlist_results:
+            playlists.extend(
+                playlist
+                for playlist in playlist_results['items']
+                if isinstance(playlist, dict) and playlist.get('id')
+            )
 
         # Handle pagination for more playlists
-        while results['playlists'].get('next') and len(playlists) < max_playlists:
-            results = sp.next(results['playlists'])
+        while playlist_results.get('next') and len(playlists) < max_playlists:
+            results = sp.next(playlist_results)
+            playlist_results = results
             if 'items' in results:
-                playlists.extend(results['items'])
+                playlists.extend(
+                    playlist
+                    for playlist in results['items']
+                    if isinstance(playlist, dict) and playlist.get('id')
+                )
             if len(playlists) >= max_playlists:
                 break
 
