@@ -1,0 +1,4 @@
+.env
+.cache
+.spotify-scripts/
+__pycache__/
