@@ -26,6 +26,7 @@ TOKEN_CACHE_PATH = APP_DIR / "token_cache.json"
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 SCOPE = "user-read-private playlist-read-private playlist-modify-private playlist-modify-public"
 RANDOM_SONG_API_BASE_URL = "https://europe-west1-randommusicgenerator-34646.cloudfunctions.net/appV2"
+REQUIRED_SCOPE_SET = set(SCOPE.split())
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -100,6 +101,10 @@ def create_spotify_client():
 
     cache_handler = SecureTokenCacheHandler(TOKEN_CACHE_PATH)
 
+    def get_cached_scope_set():
+        token_info = cache_handler.get_cached_token() or {}
+        return set((token_info.get("scope") or "").split())
+
     def build_client():
         auth_manager = SpotifyOAuth(
             client_id=client_id,
@@ -115,6 +120,14 @@ def create_spotify_client():
 
     try:
         user = spotify_client.current_user()
+        granted_scope_set = get_cached_scope_set()
+        missing_scopes = REQUIRED_SCOPE_SET - granted_scope_set
+        if missing_scopes:
+            print(f"Spotify auth is missing required scopes: {', '.join(sorted(missing_scopes))}")
+            print("Clearing the local token cache and retrying authentication with the full scope set...")
+            cache_handler.delete_cache()
+            spotify_client = build_client()
+            user = spotify_client.current_user()
     except spotipy.exceptions.SpotifyOauthError as error:
         print(f"Cached Spotify token could not be refreshed: {error}")
         print("Clearing the local token cache and retrying authentication...")
@@ -895,6 +908,10 @@ def create_spotify_playlist(selected_songs):
         print(f"Playlist '{playlist_name}' created successfully.")
     except spotipy.exceptions.SpotifyException as e:
         print(f"Error creating playlist: {e}")
+        if getattr(e, "http_status", None) == 403:
+            print("Spotify rejected playlist creation with HTTP 403.")
+            print("This usually means the current auth token is missing playlist-write permissions.")
+            print("Delete ~/.spotify-scripts/token_cache.json and run the script again to force a fresh Spotify consent flow.")
         return
 
     # Collect track URIs
