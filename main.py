@@ -526,7 +526,7 @@ def maybe_open_youtube_links(selected_songs):
 
 
 # Function to search public playlists by multiple keywords/phrases in combinations
-def search_public_playlists_by_keywords(keywords, max_playlists):
+def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_size=None):
     playlists = []
 
     # Generate unique single-keyword and pairwise search combinations.
@@ -570,17 +570,35 @@ def search_public_playlists_by_keywords(keywords, max_playlists):
                 break
 
     # Remove duplicates based on playlist ID
-    unique_playlists = {p['id']: p for p in playlists}.values()
+    unique_playlists = list({p['id']: p for p in playlists}.values())
+
+    if max_playlist_size is not None:
+        filtered_playlists = []
+        skipped_playlists = 0
+        for playlist in unique_playlists:
+            total_tracks = playlist.get('tracks', {}).get('total')
+            if isinstance(total_tracks, int) and total_tracks <= max_playlist_size:
+                filtered_playlists.append(playlist)
+            else:
+                skipped_playlists += 1
+        unique_playlists = filtered_playlists
+        print(f"Skipped {skipped_playlists} public playlists with more than {max_playlist_size} songs.")
 
     print(f"Found {len(unique_playlists)} public playlists for keyword combinations: {', '.join(keywords)}")
-    return list(unique_playlists)
+    return unique_playlists
 
 
 
 # Function to fetch songs from public playlists by multiple keywords/phrases without caching
-def fetch_songs_from_public_playlists_by_keywords(keywords, max_playlists=15, max_songs=500, max_tracks_per_playlist=35):
+def fetch_songs_from_public_playlists_by_keywords(
+    keywords,
+    max_playlists=15,
+    max_songs=500,
+    max_tracks_per_playlist=35,
+    max_playlist_size=None,
+):
     print("Starting to fetch songs from public playlists by keywords/phrases...")
-    playlists = search_public_playlists_by_keywords(keywords, max_playlists)
+    playlists = search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_size=max_playlist_size)
 
     all_tracks = []
     playlist_count = 0
@@ -687,6 +705,42 @@ def calculate_max_tracks_per_playlist(max_playlists, max_songs):
     
     return max_tracks_per_playlist
 
+
+def prompt_for_optional_positive_number(prompt_text):
+    while True:
+        raw_value = input(prompt_text).strip().lower()
+        if raw_value in {"", "none", "no", "n"}:
+            return None
+
+        try:
+            parsed_value = int(raw_value)
+        except ValueError:
+            print("Invalid input. Enter a positive number or press Enter for no limit.")
+            continue
+
+        if parsed_value > 0:
+            return parsed_value
+
+        print("Please enter a positive number or press Enter for no limit.")
+
+
+def prompt_for_optional_positive_int(prompt_text, default_value):
+    while True:
+        raw_value = input(f"{prompt_text} [{default_value}]: ").strip()
+        if not raw_value:
+            return default_value
+
+        try:
+            parsed_value = int(raw_value)
+        except ValueError:
+            print("Invalid input. Please enter a positive number or press Enter for the default.")
+            continue
+
+        if parsed_value > 0:
+            return parsed_value
+
+        print("Please enter a positive number.")
+
 # List of emotions/genres for the "Surprise Me" option
 
 def generate_random_keywords():
@@ -762,6 +816,7 @@ def main():
     max_playlists = None
     max_tracks_per_playlist = None
     max_songs = None
+    max_playlist_size = None
 
     if source_choice == '1':
         cache_file = 'song_cache_all.json'
@@ -794,6 +849,9 @@ def main():
             except ValueError:
                 print("Invalid input. Please enter a positive number.")
 
+        max_playlist_size = prompt_for_optional_positive_number(
+            "Only use public playlists with at most how many songs? (Press Enter for no limit): "
+        )
         max_songs = 20 * max_playlists  # You can keep this logic to calculate the total max songs
         max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
 
@@ -817,7 +875,13 @@ def main():
 
     if source_choice == '5' or source_choice == '6':
         # Handle option 5 and 6 without caching
-        song_list = fetch_songs_from_public_playlists_by_keywords(keywords, max_playlists=max_playlists, max_songs=max_songs, max_tracks_per_playlist=max_tracks_per_playlist)
+        song_list = fetch_songs_from_public_playlists_by_keywords(
+            keywords,
+            max_playlists=max_playlists,
+            max_songs=max_songs,
+            max_tracks_per_playlist=max_tracks_per_playlist,
+            max_playlist_size=max_playlist_size,
+        )
         if not song_list:
             print("No tracks found.")
             return
