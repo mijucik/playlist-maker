@@ -24,6 +24,7 @@ from tqdm import tqdm
 
 APP_NAME = "spotify-scripts"
 APP_DIR = Path.home() / f".{APP_NAME}"
+CONFIG_PATH = APP_DIR / "config.json"
 TOKEN_CACHE_PATH = APP_DIR / "token_cache.json"
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 SCOPE = "user-read-private playlist-read-private playlist-modify-private playlist-modify-public"
@@ -80,6 +81,59 @@ class SecureTokenCacheHandler(CacheHandler):
             pass
 
 
+def ensure_private_directory(path):
+    path.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+
+
+def load_local_config():
+    ensure_private_directory(APP_DIR)
+    if not CONFIG_PATH.exists():
+        return {}
+
+    try:
+        with CONFIG_PATH.open("r", encoding="utf-8") as config_file:
+            loaded = json.load(config_file)
+            return loaded if isinstance(loaded, dict) else {}
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def save_local_config(config_data):
+    ensure_private_directory(APP_DIR)
+    temp_fd, temp_name = tempfile.mkstemp(
+        prefix=f"{CONFIG_PATH.stem}_",
+        suffix=".tmp",
+        dir=str(APP_DIR),
+    )
+    temp_path = Path(temp_name)
+    with os.fdopen(temp_fd, "w", encoding="utf-8") as config_file:
+        json.dump(config_data, config_file, indent=2)
+    os.chmod(temp_path, 0o600)
+    os.replace(temp_path, CONFIG_PATH)
+    try:
+        os.chmod(CONFIG_PATH, 0o600)
+    except OSError:
+        pass
+
+
+def save_spotify_app_config(client_id, client_secret, redirect_uri):
+    config_data = load_local_config()
+    spotify_config = config_data.get("spotify_app", {})
+    spotify_config.update(
+        {
+            "client_id": client_id,
+            "client_secret": client_secret,
+            "redirect_uri": redirect_uri,
+        }
+    )
+    config_data["spotify_app"] = spotify_config
+    save_local_config(config_data)
+
+
 def prompt_for_env_var(name, prompt_text, secret=False, default=None):
     value = os.getenv(name)
     if value:
@@ -95,21 +149,92 @@ def prompt_for_env_var(name, prompt_text, secret=False, default=None):
     return input(f"{prompt_text}: ").strip()
 
 
+def prompt_for_visibility_filter():
+    while True:
+        print("Which playlist visibility should be used?")
+        print("1. Any visibility")
+        print("2. Public playlists only")
+        print("3. Private playlists only")
+        visibility_choice = input("Enter 1, 2, or 3 [1]: ").strip() or '1'
+
+        if visibility_choice == '1':
+            return 'any'
+        if visibility_choice == '2':
+            return 'public'
+        if visibility_choice == '3':
+            return 'private'
+
+        print("Invalid choice.")
+
+
+def playlist_matches_visibility(playlist, visibility_filter):
+    if visibility_filter == 'any':
+        return True
+
+    playlist_public = playlist.get('public')
+    if visibility_filter == 'public':
+        return playlist_public is True
+
+    if visibility_filter == 'private':
+        return playlist_public is False
+
+    return True
+
+
+def add_visibility_to_cache_file(cache_file, visibility_filter):
+    if visibility_filter == 'any':
+        return cache_file
+
+    cache_path = Path(cache_file)
+    return str(cache_path.with_name(f"{cache_path.stem}_{visibility_filter}{cache_path.suffix}"))
+
+
+def describe_visibility_filter(visibility_filter):
+    return {
+        'any': 'Any Visibility',
+        'public': 'Public Only',
+        'private': 'Private Only',
+    }.get(visibility_filter, 'Any Visibility')
+
+
+def decorate_source_for_visibility(cache_file, fetcher, description, visibility_filter):
+    if visibility_filter == 'any':
+        return cache_file, fetcher, description
+
+    visibility_label = describe_visibility_filter(visibility_filter)
+    return (
+        add_visibility_to_cache_file(cache_file, visibility_filter),
+        lambda selected_cache_file: fetcher(selected_cache_file, visibility_filter=visibility_filter),
+        f"{description} ({visibility_label})",
+    )
+
+
 def create_spotify_client():
     print("Spotify credentials are read from environment variables when available.")
-    print("If they are not set, this script will ask for them and keep the auth token in a private local cache.")
+    print("If they are not set, this script will use saved local app settings when available or ask for them.")
 
-    client_id = prompt_for_env_var("SPOTIPY_CLIENT_ID", "Enter your Spotify Client ID")
-    client_secret = prompt_for_env_var("SPOTIPY_CLIENT_SECRET", "Enter your Spotify Client Secret", secret=True)
-    redirect_uri = prompt_for_env_var(
-        "SPOTIPY_REDIRECT_URI",
-        "Enter your Spotify Redirect URI",
-        default=DEFAULT_REDIRECT_URI,
-    )
+    saved_spotify_config = load_local_config().get("spotify_app", {})
+    client_id = os.getenv("SPOTIPY_CLIENT_ID") or saved_spotify_config.get("client_id")
+    client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or saved_spotify_config.get("client_secret")
+    redirect_uri = os.getenv("SPOTIPY_REDIRECT_URI") or saved_spotify_config.get("redirect_uri")
+
+    if not client_id:
+        client_id = prompt_for_env_var("SPOTIPY_CLIENT_ID", "Enter your Spotify Client ID")
+    if not client_secret:
+        client_secret = prompt_for_env_var("SPOTIPY_CLIENT_SECRET", "Enter your Spotify Client Secret", secret=True)
+    if not redirect_uri:
+        redirect_uri = prompt_for_env_var(
+            "SPOTIPY_REDIRECT_URI",
+            "Enter your Spotify Redirect URI",
+            default=DEFAULT_REDIRECT_URI,
+        )
 
     if not client_id or not client_secret:
         print("Error: Spotify client ID and client secret are required.")
         sys.exit(1)
+
+    if not os.getenv("SPOTIPY_CLIENT_ID") and not os.getenv("SPOTIPY_CLIENT_SECRET"):
+        save_spotify_app_config(client_id, client_secret, redirect_uri)
 
     cache_handler = SecureTokenCacheHandler(TOKEN_CACHE_PATH)
 
@@ -246,11 +371,21 @@ def write_song_cache(cache_file, song_list):
     print(f"Cache file '{abs_cache_path}' written successfully.")
 
 
-def fetch_and_cache_filtered_playlist_songs(cache_file, playlist_filter, filter_description, progress_label='Fetching playlists'):
+def fetch_and_cache_filtered_playlist_songs(
+    cache_file,
+    playlist_filter,
+    filter_description,
+    progress_label='Fetching playlists',
+    visibility_filter='any',
+):
     print(f"Starting to fetch and cache songs for playlist filter: {filter_description}...")
     try:
         playlists = fetch_current_user_playlists(progress_label)
-        filtered_playlists = [playlist for playlist in playlists if playlist_filter(playlist)]
+        filtered_playlists = [
+            playlist
+            for playlist in playlists
+            if playlist_filter(playlist) and playlist_matches_visibility(playlist, visibility_filter)
+        ]
         print(f"Playlists matching '{filter_description}': {len(filtered_playlists)}")
 
         all_tracks = []
@@ -269,27 +404,29 @@ def fetch_and_cache_filtered_playlist_songs(cache_file, playlist_filter, filter_
 
 
 # Function to fetch songs from all playlists and update the cache
-def fetch_and_cache_all_songs(cache_file):
+def fetch_and_cache_all_songs(cache_file, visibility_filter='any'):
     return fetch_and_cache_filtered_playlist_songs(
         cache_file,
         playlist_filter=lambda playlist: True,
         filter_description='All playlists',
         progress_label='Fetching all playlists',
+        visibility_filter=visibility_filter,
     )
 
 
 # Function to fetch songs from Rediscover playlists and update the cache
-def fetch_and_cache_rediscover_songs(cache_file):
+def fetch_and_cache_rediscover_songs(cache_file, visibility_filter='any'):
     date_pattern = re.compile(r'^Rediscover\s-\s[A-Za-z]{3}\s\d{1,2}(st|nd|rd|th)$', re.IGNORECASE)
     return fetch_and_cache_filtered_playlist_songs(
         cache_file,
         playlist_filter=lambda playlist: bool(date_pattern.match(playlist['name'])),
         filter_description='Rediscover preset',
+        visibility_filter=visibility_filter,
     )
 
 
 # Function to fetch songs from user-created playlists and update the cache
-def fetch_and_cache_user_playlists_songs(cache_file):
+def fetch_and_cache_user_playlists_songs(cache_file, visibility_filter='any'):
     print("Starting to fetch and cache user-created playlist songs...")
     try:
         # Fetch current user's playlists
@@ -309,7 +446,11 @@ def fetch_and_cache_user_playlists_songs(cache_file):
 
         # Filter playlists created by the user
         user_id = sp.current_user()['id']
-        user_playlists = [plist for plist in playlists if plist['owner']['id'] == user_id]
+        user_playlists = [
+            plist
+            for plist in playlists
+            if plist['owner']['id'] == user_id and playlist_matches_visibility(plist, visibility_filter)
+        ]
         print(f"User-created playlists found: {len(user_playlists)}")
 
         # Retrieve tracks from the user playlists
@@ -358,7 +499,7 @@ def build_filtered_playlist_cache_file(filter_label):
     return f"song_cache_filtered_{safe_label}.json"
 
 
-def prompt_for_playlist_name_filter():
+def prompt_for_playlist_name_filter(visibility_filter='any'):
     while True:
         print("Choose how to match playlist names:")
         print("1. Rediscover preset")
@@ -369,7 +510,10 @@ def prompt_for_playlist_name_filter():
         if filter_choice == '1':
             return {
                 'cache_file': 'song_cache_rediscover.json',
-                'fetcher': fetch_and_cache_rediscover_songs,
+                'fetcher': lambda selected_cache_file: fetch_and_cache_rediscover_songs(
+                    selected_cache_file,
+                    visibility_filter=visibility_filter,
+                ),
                 'description': 'Rediscover Playlists',
             }
 
@@ -389,6 +533,7 @@ def prompt_for_playlist_name_filter():
                     selected_cache_file,
                     playlist_filter=lambda playlist: lowered_search_text in playlist['name'].lower(),
                     filter_description=description,
+                    visibility_filter=visibility_filter,
                 ),
                 'description': description,
             }
@@ -415,6 +560,7 @@ def prompt_for_playlist_name_filter():
                     selected_cache_file,
                     playlist_filter=lambda playlist: bool(compiled_pattern.search(playlist['name'])),
                     filter_description=description,
+                    visibility_filter=visibility_filter,
                 ),
                 'description': description,
             }
@@ -423,7 +569,7 @@ def prompt_for_playlist_name_filter():
 
 
 # Function to fetch songs from random playlists
-def fetch_and_cache_random_playlists_songs(cache_file, num_songs):
+def fetch_and_cache_random_playlists_songs(cache_file, num_songs, visibility_filter='any'):
     print("Starting to fetch and cache random playlist songs...")
     try:
         # Fetch current user's playlists
@@ -437,6 +583,8 @@ def fetch_and_cache_random_playlists_songs(cache_file, num_songs):
         while results['next']:
             results = sp.next(results)
             playlists.extend(results['items'])
+
+        playlists = [playlist for playlist in playlists if playlist_matches_visibility(playlist, visibility_filter)]
 
         if not playlists:
             print("No playlists found.")
@@ -1851,24 +1999,46 @@ def main():
     public_discovery_mode = DEFAULT_PUBLIC_DISCOVERY_MODE
 
     if source_choice == '1':
-        cache_file = 'song_cache_all.json'
-        fetch_and_cache_songs = fetch_and_cache_all_songs
-        source_description = 'All Playlists'
+        playlist_visibility_filter = prompt_for_visibility_filter()
+        cache_file, fetch_and_cache_songs, source_description = decorate_source_for_visibility(
+            'song_cache_all.json',
+            fetch_and_cache_all_songs,
+            'All Playlists',
+            playlist_visibility_filter,
+        )
     elif source_choice == '2':
-        filter_config = prompt_for_playlist_name_filter()
+        playlist_visibility_filter = prompt_for_visibility_filter()
+        filter_config = prompt_for_playlist_name_filter(playlist_visibility_filter)
         if not filter_config:
             return
-        cache_file = filter_config['cache_file']
+        cache_file = add_visibility_to_cache_file(filter_config['cache_file'], playlist_visibility_filter)
         fetch_and_cache_songs = filter_config['fetcher']
-        source_description = filter_config['description']
+        source_description = (
+            f"{filter_config['description']} ({describe_visibility_filter(playlist_visibility_filter)})"
+            if playlist_visibility_filter != 'any'
+            else filter_config['description']
+        )
     elif source_choice == '3':
-        cache_file = 'song_cache_user_playlists.json'
-        fetch_and_cache_songs = fetch_and_cache_user_playlists_songs
-        source_description = 'Your Own Playlists'
+        playlist_visibility_filter = prompt_for_visibility_filter()
+        cache_file, fetch_and_cache_songs, source_description = decorate_source_for_visibility(
+            'song_cache_user_playlists.json',
+            fetch_and_cache_user_playlists_songs,
+            'Your Own Playlists',
+            playlist_visibility_filter,
+        )
     elif source_choice == '4':
-        cache_file = 'song_cache_random_playlists.json'
-        fetch_and_cache_songs = lambda cache_file: fetch_and_cache_random_playlists_songs(cache_file, num_songs)
-        source_description = 'Random Playlists'
+        playlist_visibility_filter = prompt_for_visibility_filter()
+        cache_file = add_visibility_to_cache_file('song_cache_random_playlists.json', playlist_visibility_filter)
+        fetch_and_cache_songs = lambda selected_cache_file: fetch_and_cache_random_playlists_songs(
+            selected_cache_file,
+            num_songs,
+            visibility_filter=playlist_visibility_filter,
+        )
+        source_description = (
+            f"Random Playlists ({describe_visibility_filter(playlist_visibility_filter)})"
+            if playlist_visibility_filter != 'any'
+            else 'Random Playlists'
+        )
     elif source_choice == '5' or source_choice == '6':
         if source_choice == '5':
             max_playlists = prompt_for_max_playlists()

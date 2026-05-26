@@ -5,6 +5,7 @@ This is a command-line tool for finding random songs and building Spotify playli
 It can:
 
 - pull from all of your playlists, only your own playlists, or a random subset
+- limit your personal playlist sources to `any`, `public only`, or `private only`
 - filter your playlists by name with a Rediscover preset, plain text, or regex
 - discover songs from public Spotify playlists, YouTube playlists, and direct Spotify/YouTube track search
 - use `random-song.com` inside `Surprise me` for truly random song discovery
@@ -96,6 +97,27 @@ On Windows PowerShell:
 python -m pip install -r requirements.txt
 ```
 
+### 3a. Use the easy app if you want a simpler launcher
+
+If you want a simpler browser-based launcher instead of the raw CLI, run:
+
+```bash
+python3 easy_app.py
+```
+
+On Windows PowerShell:
+
+```powershell
+python easy_app.py
+```
+
+The easy app lets people:
+
+- enter Spotify app credentials once and save them locally
+- choose common playlist/search options from dropdowns
+- run the picker without manually stepping through every CLI prompt
+- open the local launcher in a browser automatically
+
 ### 4. Create a Spotify app
 
 You need your own Spotify developer app so the script can authenticate to your account:
@@ -146,6 +168,8 @@ python main.py
 
 You can also use [.env.example](/Users/kevintang/Downloads/spotify-scripts-main/.env.example:1) as a reference, but this project does not auto-load `.env` files.
 
+If you save credentials through `easy_app.py`, the CLI will reuse those saved app settings automatically on future runs.
+
 ### 6. Authorize the app in your browser
 
 The first time you run the script, Spotify should open a browser window and ask you to approve access. The auth token is then stored in `~/.spotify-scripts/token_cache.json` for later runs.
@@ -191,6 +215,7 @@ python3 main.py
 Useful flows:
 
 - `2` filters your own playlists by `Rediscover`, `contains`, or `regex`
+- `1`, `2`, `3`, and `4` can be limited to `any`, `public only`, or `private only` playlists
 - `5` searches public music sources by keywords
 - `5` supports `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
 - `5` and the public `Surprise me` mode both support minimum and maximum playlist-size filters
