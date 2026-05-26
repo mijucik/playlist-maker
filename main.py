@@ -33,6 +33,7 @@ SPOTIFY_PLAYLIST_SEARCH_LIMIT = 10
 DEFAULT_PUBLIC_DISCOVERY_MODE = "hybrid"
 SPOTIFY_PUBLIC_TRACK_API_BLOCKED = False
 YOUTUBE_SEARCH_RESULT_LIMIT = 20
+SPOTIFY_MATCH_CACHE = {}
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -697,19 +698,11 @@ def find_youtube_url(song):
 
 
 def find_spotify_url(song):
-    query = f"track:{song['title']} artist:{song['artists']}"
-    try:
-        result = sp.search(q=query, type='track', limit=1)
-    except spotipy.exceptions.SpotifyException as error:
-        print(f"Could not search Spotify for {song['title']} by {song['artists']}: {error}")
+    spotify_match = resolve_song_on_spotify(song)
+    if not spotify_match:
         return None, False
 
-    tracks = result.get('tracks', {}).get('items', [])
-    if not tracks:
-        return None, False
-
-    spotify_url = tracks[0].get('external_urls', {}).get('spotify')
-    return spotify_url, bool(spotify_url)
+    return spotify_match.get('spotify_url'), spotify_match.get('spotify_found_exact_track', False)
 
 
 def find_spotify_track_for_song(song):
@@ -719,24 +712,11 @@ def find_spotify_track_for_song(song):
         if track_id:
             return f"spotify:track:{track_id}"
 
-    search_queries = [
-        f"track:{song['title']} artist:{song['artists']}",
-        f"track:{song['title']}",
-        f"{song['title']} {song['artists']}",
-    ]
+    spotify_match = resolve_song_on_spotify(song)
+    if not spotify_match:
+        return None
 
-    for query in search_queries:
-        try:
-            result = sp.search(q=query, type='track', limit=5)
-        except spotipy.exceptions.SpotifyException as error:
-            print(f"Error searching for track with query '{query}': {error}")
-            continue
-
-        tracks = result.get('tracks', {}).get('items', [])
-        if tracks:
-            return tracks[0].get('uri')
-
-    return None
+    return spotify_match.get('spotify_uri')
 
 
 def attach_platform_links(selected_songs, link_platform):
@@ -1215,6 +1195,7 @@ def fetch_songs_from_youtube_public_playlists(playlist_ids, max_playlists, max_t
 
         playlist_song_count = 0
         skipped_non_song_count = 0
+        skipped_unverified_count = 0
         for raw_title in unique_titles:
             if playlist_song_count >= max_tracks_per_playlist:
                 break
@@ -1224,13 +1205,19 @@ def fetch_songs_from_youtube_public_playlists(playlist_ids, max_playlists, max_t
                 skipped_non_song_count += 1
                 continue
 
-            song_list.append(song)
+            verified_song = verify_song_on_spotify(song)
+            if not verified_song:
+                skipped_unverified_count += 1
+                continue
+
+            song_list.append(verified_song)
             playlist_song_count += 1
 
         if playlist_song_count:
             print(
-                f"Recovered {playlist_song_count} likely song candidate(s) from YouTube playlist '{playlist_id}'"
-                f" and skipped {skipped_non_song_count} likely non-song video(s)."
+                f"Recovered {playlist_song_count} cross-platform song candidate(s) from YouTube playlist '{playlist_id}'"
+                f", skipped {skipped_non_song_count} likely non-song video(s),"
+                f" and skipped {skipped_unverified_count} title(s) that did not resolve on Spotify."
             )
             playlists_used += 1
 
@@ -1245,6 +1232,63 @@ def merge_song_list_with_seen(song_list, seen_song_keys, song):
     seen_song_keys.add(song_key)
     song_list.append(song)
     return True
+
+
+def build_spotify_search_queries(song):
+    title = (song.get('title') or '').strip()
+    artists = (song.get('artists') or '').strip()
+    queries = []
+
+    if title and artists and artists != 'Unknown Artist':
+        queries.append((f"track:{title} artist:{artists}", True))
+        queries.append((f"{title} {artists}", False))
+
+    if title:
+        queries.append((f"track:{title}", False))
+        queries.append((title, False))
+
+    return queries
+
+
+def resolve_song_on_spotify(song, suppress_errors=False):
+    song_key = normalize_song_key(song.get('title', ''), song.get('artists', ''))
+    if song_key in SPOTIFY_MATCH_CACHE:
+        return SPOTIFY_MATCH_CACHE[song_key]
+
+    for query, is_exact_query in build_spotify_search_queries(song):
+        try:
+            result = sp.search(q=query, type='track', limit=5)
+        except spotipy.exceptions.SpotifyException as error:
+            if not suppress_errors:
+                print(f"Could not search Spotify for {song.get('title', 'Unknown Title')} by {song.get('artists', 'Unknown Artist')}: {error}")
+            continue
+
+        tracks = result.get('tracks', {}).get('items', [])
+        if not tracks:
+            continue
+
+        track = tracks[0]
+        spotify_match = {
+            'spotify_url': track.get('external_urls', {}).get('spotify'),
+            'spotify_uri': track.get('uri'),
+            'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')) and is_exact_query,
+        }
+        SPOTIFY_MATCH_CACHE[song_key] = spotify_match
+        return spotify_match
+
+    SPOTIFY_MATCH_CACHE[song_key] = None
+    return None
+
+
+def verify_song_on_spotify(song):
+    spotify_match = resolve_song_on_spotify(song, suppress_errors=True)
+    if not spotify_match:
+        return None
+
+    verified_song = dict(song)
+    verified_song.update(spotify_match)
+    verified_song['cross_platform_verified'] = True
+    return verified_song
 
 
 def search_spotify_tracks_by_keywords(keywords, max_songs):
@@ -1299,23 +1343,30 @@ def search_youtube_videos_by_keywords(keywords, max_songs):
 
         video_count = 0
         skipped_non_song_count = 0
+        skipped_unverified_count = 0
         for video_id, raw_title in video_pattern.findall(html_text):
             song = convert_youtube_video_title_to_song(raw_title)
             if not is_likely_youtube_song(song):
                 skipped_non_song_count += 1
                 continue
 
-            song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
-            song['youtube_found_exact_video'] = True
-            if merge_song_list_with_seen(song_list, seen_song_keys, song):
+            verified_song = verify_song_on_spotify(song)
+            if not verified_song:
+                skipped_unverified_count += 1
+                continue
+
+            verified_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
+            verified_song['youtube_found_exact_video'] = True
+            if merge_song_list_with_seen(song_list, seen_song_keys, verified_song):
                 video_count += 1
 
             if video_count >= YOUTUBE_SEARCH_RESULT_LIMIT or len(song_list) >= max_songs:
                 break
 
         print(
-            f"Recovered {video_count} likely song candidate(s) from YouTube search for '{keyword_combo}'"
-            f" and skipped {skipped_non_song_count} likely non-song result(s)."
+            f"Recovered {video_count} cross-platform song candidate(s) from YouTube search for '{keyword_combo}'"
+            f", skipped {skipped_non_song_count} likely non-song result(s),"
+            f" and skipped {skipped_unverified_count} result(s) that did not resolve on Spotify."
         )
 
         if len(song_list) >= max_songs:

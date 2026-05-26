@@ -8,6 +8,7 @@ This project is a small command-line script that talks to Spotify and helps you:
 - pick from all of your saved playlists
 - pick from a random mix of your playlists
 - discover songs from public Spotify playlists, YouTube playlists, and direct Spotify/YouTube track search by keywords or phrases
+  - YouTube-derived candidates are only kept if they can also be resolved on Spotify
 - use a "Surprise me" mode driven by the local `emotions_genres.txt` list
 - use `random-song.com` as an additional true-random song source inside `Surprise me`
 - optionally look up selected songs on Spotify, YouTube, or both, and open the links
@@ -151,6 +152,7 @@ Useful flows inside the app:
 - `2` lets you filter your own playlists by `Rediscover`, `contains`, or `regex`
 - `5` searches public music sources by your keywords
 - in that flow, you can choose `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
+- YouTube-derived candidates are cross-checked against Spotify before they are accepted
 - `6` now has multiple surprise modes:
 - random emotions/genres searched through the same public discovery system
 - `random-song.com` with its own default random setup (`all decades`, `random genre`, `random market`)
