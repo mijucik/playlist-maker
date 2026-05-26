@@ -890,8 +890,8 @@ def fetch_songs_from_public_playlists_by_keywords(
 
 def create_spotify_playlist(selected_songs):
     try:
-        # Get current user's ID
-        user_id = sp.current_user()['id']
+        user = sp.current_user()
+        user_id = user['id']
     except spotipy.exceptions.SpotifyException as e:
         print(f"Error fetching user ID: {e}")
         return
@@ -904,14 +904,19 @@ def create_spotify_playlist(selected_songs):
 
     # Create the playlist
     try:
-        playlist = sp.user_playlist_create(user_id, playlist_name, public=False)
+        playlist = sp.current_user_playlist_create(playlist_name, public=False)
         print(f"Playlist '{playlist_name}' created successfully.")
     except spotipy.exceptions.SpotifyException as e:
         print(f"Error creating playlist: {e}")
         if getattr(e, "http_status", None) == 403:
             print("Spotify rejected playlist creation with HTTP 403.")
-            print("This usually means the current auth token is missing playlist-write permissions.")
+            print("The most common causes are:")
+            print("- the cached token was authorized without playlist-write scopes")
+            print("- the token belongs to an older Spotify app configuration")
+            print("- the request is not being treated as the current authenticated user")
+            print("This script requests playlist-modify-private and now creates playlists through the current-user endpoint.")
             print("Delete ~/.spotify-scripts/token_cache.json and run the script again to force a fresh Spotify consent flow.")
+            print(f"Authenticated user during this run: {user_id}")
         return
 
     # Collect track URIs

@@ -81,6 +81,7 @@ Important:
 
 - The redirect URI must match exactly.
 - Use `127.0.0.1`, not `localhost`.
+- Playlist permissions are not configured in the Spotify dashboard. They are granted during the OAuth login flow when the app requests scopes like `playlist-modify-private` and `playlist-modify-public`.
 
 ### 5. Provide your Spotify credentials
 
