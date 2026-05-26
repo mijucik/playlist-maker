@@ -111,6 +111,12 @@ On Windows PowerShell:
 python web.py
 ```
 
+The web app will try to install missing Python packages from [requirements.txt](/Users/kevintang/Downloads/spotify-scripts-main/requirements.txt:1) automatically the first time you run it, so most people only need:
+
+- Python 3
+- `pip`
+- their own Spotify app credentials
+
 The web app lets people:
 
 - enter Spotify app credentials once and save them locally

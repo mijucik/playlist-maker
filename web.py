@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 
 import html
+import importlib.util
 import json
 import mimetypes
 import os
@@ -24,6 +25,7 @@ REPO_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
 SESSIONS = {}
 SESSIONS_LOCK = threading.Lock()
+RUNTIME_SETUP_MESSAGE = ""
 
 AUTO_RESPONSE_PROMPTS = {
     "Do you want to open the file now? (yes/no): ": "no",
@@ -56,8 +58,10 @@ INTERACTIVE_PROMPTS = {
 }
 
 PROMPT_SUFFIXES = list(AUTO_RESPONSE_PROMPTS) + list(INTERACTIVE_PROMPTS)
-SPOTIFY_LINK_RE = re.compile(r"https://open\.spotify\.com/[^\s)'\"]+")
-YOUTUBE_LINK_RE = re.compile(r"https://www\.youtube\.com/[^\s)'\"]+")
+REQUIRED_MODULES = {
+    "spotipy": "spotipy==2.26.0",
+    "tqdm": "tqdm==4.66.5",
+}
 
 
 def ensure_private_directory(path):
@@ -101,6 +105,32 @@ def save_local_config(config_data):
 
 def escape(value):
     return html.escape(value or "")
+
+
+def ensure_cli_dependencies():
+    missing_requirements = [
+        requirement
+        for module_name, requirement in REQUIRED_MODULES.items()
+        if importlib.util.find_spec(module_name) is None
+    ]
+
+    if not missing_requirements:
+        return "CLI dependencies already available."
+
+    print("Missing Python packages detected for the picker. Installing them now...")
+    install_command = [sys.executable, "-m", "pip", "install", "-r", str(REPO_DIR / "requirements.txt")]
+    result = subprocess.run(
+        install_command,
+        cwd=REPO_DIR,
+        text=True,
+        capture_output=True,
+    )
+
+    if result.returncode != 0:
+        stderr = result.stderr.strip() or result.stdout.strip() or "Unknown pip error."
+        raise RuntimeError(f"Could not auto-install dependencies: {stderr}")
+
+    return "Installed missing CLI dependencies automatically."
 
 
 def get_saved_spotify_config():
@@ -293,14 +323,6 @@ def save_credentials_from_form(form):
     save_local_config(config_data)
 
 
-def append_unique(items, new_items):
-    seen = set(items)
-    for item in new_items:
-        if item not in seen:
-            items.append(item)
-            seen.add(item)
-
-
 class InteractiveRunSession:
     def __init__(self, form):
         self.id = uuid.uuid4().hex
@@ -317,9 +339,8 @@ class InteractiveRunSession:
         self.current_prompt = None
         self.status = "Starting..."
         self.generated_file = None
-        self.spotify_links = []
-        self.youtube_links = []
         self.error = None
+        self.was_cancelled = False
 
     def start(self):
         with self.lock:
@@ -359,7 +380,9 @@ class InteractiveRunSession:
             with self.lock:
                 self.finished = True
                 self.exit_code = self.process.returncode
-                if self.exit_code == 0:
+                if self.was_cancelled:
+                    self.status = "Run cancelled."
+                elif self.exit_code == 0:
                     self.status = "Run finished."
                 else:
                     self.status = f"Run exited with code {self.exit_code}."
@@ -436,6 +459,7 @@ class InteractiveRunSession:
         if self.process and self.process.poll() is None:
             self.process.kill()
         with self.lock:
+            self.was_cancelled = True
             self.finished = True
             self.status = "Run cancelled."
             self.current_prompt = None
@@ -454,9 +478,6 @@ class InteractiveRunSession:
                     possible_path = Path(match.group(1))
                     if possible_path.exists():
                         self.generated_file = possible_path
-
-            append_unique(self.spotify_links, SPOTIFY_LINK_RE.findall(line))
-            append_unique(self.youtube_links, YOUTUBE_LINK_RE.findall(line))
 
     def artifact_url(self):
         if not self.generated_file or not self.generated_file.exists():
@@ -482,8 +503,6 @@ class InteractiveRunSession:
                 "artifact_path": artifact_path,
                 "artifact_kind": artifact_kind,
                 "artifact_url": artifact_url,
-                "spotify_links": list(self.spotify_links),
-                "youtube_links": list(self.youtube_links),
                 "error": self.error,
             }
 
@@ -618,6 +637,7 @@ def render_page(form, status="Ready."):
   <div class="page">
     <h1>Spotify Playlist Picker Web</h1>
     <p class="hint">Run the picker in a live web terminal, answer follow-up prompts in place, and preview generated HTML output directly below.</p>
+    <p class="hint">{escape(RUNTIME_SETUP_MESSAGE)}</p>
 
     <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
@@ -816,6 +836,8 @@ def render_page(form, status="Ready."):
   <script>
     let currentSessionId = null;
     let pollTimer = null;
+    let activePromptSignature = null;
+    let promptDraft = "";
     const settingsClientId = document.getElementById("client_id");
     const settingsClientSecret = document.getElementById("client_secret");
     const settingsRedirectUri = document.getElementById("redirect_uri");
@@ -927,29 +949,49 @@ def render_page(form, status="Ready."):
 
     function renderPrompt(data) {{
       const prompt = data.prompt;
-      setHidden(promptCard, !prompt);
-      promptChoiceRow.innerHTML = "";
-      promptForm.classList.add("hidden");
-      promptInput.value = "";
-
       if (!prompt) {{
+        activePromptSignature = null;
+        promptDraft = "";
+        setHidden(promptCard, true);
+        promptChoiceRow.innerHTML = "";
+        promptForm.classList.add("hidden");
+        promptInput.value = "";
         promptText.textContent = "";
         return;
       }}
 
+      setHidden(promptCard, false);
+      const promptSignature = `${{prompt.id}}::${{prompt.prompt_text}}`;
+      const promptChanged = activePromptSignature !== promptSignature;
+      activePromptSignature = promptSignature;
       promptText.textContent = prompt.prompt_text;
+
       if (prompt.type === "choice") {{
-        prompt.choices.forEach((choice) => {{
-          const button = document.createElement("button");
-          button.type = "button";
-          button.textContent = choice;
-          button.addEventListener("click", () => sendPromptAnswer(choice));
-          promptChoiceRow.appendChild(button);
-        }});
+        if (promptChanged) {{
+          promptDraft = "";
+          promptChoiceRow.innerHTML = "";
+          prompt.choices.forEach((choice) => {{
+            const button = document.createElement("button");
+            button.type = "button";
+            button.textContent = choice;
+            button.addEventListener("click", () => sendPromptAnswer(choice));
+            promptChoiceRow.appendChild(button);
+          }});
+        }}
+        promptForm.classList.add("hidden");
       }} else {{
+        if (promptChanged) {{
+          promptDraft = "";
+        }}
+        promptChoiceRow.innerHTML = "";
         promptInput.placeholder = prompt.placeholder || "Enter your answer";
         promptForm.classList.remove("hidden");
-        promptInput.focus();
+        if (promptInput.value !== promptDraft) {{
+          promptInput.value = promptDraft;
+        }}
+        if (promptChanged) {{
+          promptInput.focus();
+        }}
       }}
     }}
 
@@ -1004,6 +1046,7 @@ def render_page(form, status="Ready."):
       if (!currentSessionId) {{
         return;
       }}
+      promptDraft = "";
       await fetch("/api/respond", {{
         method: "POST",
         body: new URLSearchParams({{ session_id: currentSessionId, answer }}),
@@ -1033,6 +1076,9 @@ def render_page(form, status="Ready."):
     promptForm.addEventListener("submit", (event) => {{
       event.preventDefault();
       sendPromptAnswer(promptInput.value);
+    }});
+    promptInput.addEventListener("input", () => {{
+      promptDraft = promptInput.value;
     }});
     runForm.addEventListener("submit", (event) => {{
       event.preventDefault();
@@ -1171,6 +1217,10 @@ def start_server():
 
 
 if __name__ == "__main__":
+    try:
+        RUNTIME_SETUP_MESSAGE = ensure_cli_dependencies()
+    except RuntimeError as error:
+        RUNTIME_SETUP_MESSAGE = str(error)
     server, port = start_server()
     url = f"http://127.0.0.1:{port}"
     print(f"Spotify Playlist Picker Web running at {url}")
