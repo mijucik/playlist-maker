@@ -7,7 +7,7 @@ This project is a small command-line script that talks to Spotify and helps you:
 - filter your own playlists by name using either plain text or a custom regex
 - pick from all of your saved playlists
 - pick from a random mix of your playlists
-- search public Spotify playlists by keywords or phrases
+- discover songs from public Spotify playlists, YouTube playlists, and Spotify track search by keywords or phrases
 - use a "Surprise me" mode driven by the local `emotions_genres.txt` list
 - use `random-song.com` as an additional true-random song source inside `Surprise me`
 - optionally look up selected songs on Spotify, YouTube, or both, and open the links
@@ -149,13 +149,14 @@ python3 main.py
 Useful flows inside the app:
 
 - `2` lets you filter your own playlists by `Rediscover`, `contains`, or `regex`
-- `5` searches public playlists by your keywords
+- `5` searches public music sources by your keywords
+- in that flow, you can choose `hybrid`, `Spotify public playlists`, `YouTube playlists`, or `Spotify track search`
 - `6` now has multiple surprise modes:
-- random emotions/genres searched through public playlists
+- random emotions/genres searched through the same public discovery system
 - `random-song.com` with its own default random setup (`all decades`, `random genre`, `random market`)
 - `random-song.com` with your own custom genre/market/decade settings
 - after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or `both`
-- when using public playlists, you can set a maximum playlist size to avoid huge playlists
+- when using public discovery, you can set a maximum playlist size to avoid huge playlists
 
 ## Notes
 
