@@ -1,24 +1,20 @@
 # Spotify Playlist Picker
 
-This project is a small command-line script that talks to Spotify and helps you:
+This is a command-line tool for finding random songs and building Spotify playlists.
 
-- pick random songs from your own playlists
-- pick from playlists named like `Rediscover - Jan 19th`
-- filter your own playlists by name using either plain text or a custom regex
-- pick from all of your saved playlists
-- pick from a random mix of your playlists
-- discover songs from public Spotify playlists, YouTube playlists, and direct Spotify/YouTube track search by keywords or phrases
-  - YouTube-derived candidates are only kept if they can also be resolved on Spotify
-- use a "Surprise me" mode driven by the local `emotions_genres.txt` list
-- use `random-song.com` as an additional true-random song source inside `Surprise me`
-- optionally look up selected songs on Spotify, YouTube, or both, and open the links
-- optionally export the results to `.txt` or `.html`
-- optionally create a new private Spotify playlist from the selected songs
-- optionally skip very large public playlists by setting a maximum playlist size
+It can:
+
+- pull from all of your playlists, only your own playlists, or a random subset
+- filter your playlists by name with a Rediscover preset, plain text, or regex
+- discover songs from public Spotify playlists, YouTube playlists, and direct Spotify/YouTube track search
+- use `random-song.com` inside `Surprise me` for truly random song discovery
+- look up Spotify links, YouTube links, or both
+- export results to `.txt` or `.html`
+- create a new private Spotify playlist from the selected songs
+
+For public discovery, YouTube-derived candidates are only kept if they can also be resolved on Spotify.
 
 ## Fresh Machine Setup
-
-If you are setting this up on a brand-new machine, here is the shortest path.
 
 ### 1. Install what you need
 
@@ -62,9 +58,7 @@ python3 -m pip install -r requirements.txt
 
 ### 4. Create a Spotify app
 
-You need your own Spotify developer app so the script can authenticate to your account.
-
-At a high level, you will:
+You need your own Spotify developer app so the script can authenticate to your account:
 
 1. Sign in at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
 2. Create an app.
@@ -82,11 +76,9 @@ Important:
 
 - The redirect URI must match exactly.
 - Use `127.0.0.1`, not `localhost`.
-- Playlist permissions are not configured in the Spotify dashboard. They are granted during the OAuth login flow when the app requests scopes like `playlist-modify-private` and `playlist-modify-public`.
+- Playlist permissions are granted during the OAuth login flow, not in the Spotify dashboard.
 
 ### 5. Provide your Spotify credentials
-
-You have two options.
 
 Option A: let the script prompt you.
 
@@ -103,16 +95,11 @@ export SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
 python3 main.py
 ```
 
-If you prefer, you can also copy [.env.example](/Users/kevintang/Downloads/spotify-scripts-main/.env.example:1) and use it as a reference for the values you need, but this project does not auto-load `.env` files.
+You can also use [.env.example](/Users/kevintang/Downloads/spotify-scripts-main/.env.example:1) as a reference, but this project does not auto-load `.env` files.
 
 ### 6. Authorize the app in your browser
 
-The first time you run the script, Spotify should open a browser window and ask you to approve access.
-
-After you approve it:
-
-- the script stores the auth token in `~/.spotify-scripts/token_cache.json`
-- later runs should usually reuse that token automatically
+The first time you run the script, Spotify should open a browser window and ask you to approve access. The auth token is then stored in `~/.spotify-scripts/token_cache.json` for later runs.
 
 ### 7. Run it again later
 
@@ -124,8 +111,6 @@ python3 main.py
 ```
 
 ## Security improvements
-
-This version makes a few security-focused changes:
 
 - no Spotify client secret is stored in the code
 - the script prompts for Spotify credentials if environment variables are missing
@@ -147,18 +132,14 @@ Run the main script:
 python3 main.py
 ```
 
-Useful flows inside the app:
+Useful flows:
 
-- `2` lets you filter your own playlists by `Rediscover`, `contains`, or `regex`
-- `5` searches public music sources by your keywords
-- in that flow, you can choose `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
-- YouTube-derived candidates are cross-checked against Spotify before they are accepted
-- `6` now has multiple surprise modes:
-- random emotions/genres searched through the same public discovery system
-- `random-song.com` with its own default random setup (`all decades`, `random genre`, `random market`)
-- `random-song.com` with your own custom genre/market/decade settings
-- after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or `both`
-- when using public discovery, you can set a maximum playlist size to avoid huge playlists
+- `2` filters your own playlists by `Rediscover`, `contains`, or `regex`
+- `5` searches public music sources by keywords
+- `5` supports `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
+- `6` includes public-discovery surprise mode plus two `random-song.com` modes
+- public discovery can skip very large playlists with a maximum playlist size
+- after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or both
 
 ## Notes
 
