@@ -151,7 +151,7 @@ Useful flows inside the app:
 - `5` searches public playlists by your keywords
 - `6` now has multiple surprise modes:
 - random emotions/genres searched through public playlists
-- `random-song.com` with completely random configurations
+- `random-song.com` with its own default random setup (`all decades`, `random genre`, `random market`)
 - `random-song.com` with your own custom genre/market/decade settings
 - after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or `both`
 - when using public playlists, you can set a maximum playlist size to avoid huge playlists

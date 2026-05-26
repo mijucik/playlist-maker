@@ -544,16 +544,13 @@ def prompt_for_random_song_generator_config(options):
     }
 
 
-def build_random_song_generator_random_config(options):
-    market_choices = ["random"] + [market.get("name") for market in options["markets"] if market.get("name")]
-    genre_choices = ["random", "none"] + [genre.get("name") for genre in options["genres"] if genre.get("name")]
-    decade_choices = ["random", "all"] + [decade.get("name") for decade in options["decades"] if decade.get("name")]
+def build_random_song_generator_default_config():
     return {
-        "market": random.choice(market_choices),
-        "genre": random.choice(genre_choices),
-        "decade": random.choice(decade_choices),
-        "tag_new": random.choice([True, False]),
-        "exclude_singles": random.choice([True, False]),
+        "market": "random",
+        "genre": "random",
+        "decade": "all",
+        "tag_new": False,
+        "exclude_singles": False,
     }
 
 
@@ -599,7 +596,6 @@ def convert_random_song_generator_track(track, meta_data=None):
 
 def fetch_songs_from_random_song_generator(num_songs, mode, config=None):
     print("Fetching songs from random-song.com...")
-    options = fetch_random_song_generator_options()
     song_list = []
     seen_song_keys = set()
     max_total_attempts = max(num_songs * 6, 10)
@@ -608,7 +604,7 @@ def fetch_songs_from_random_song_generator(num_songs, mode, config=None):
     with tqdm(total=num_songs, desc='Getting random-song.com tracks', unit='song') as progress_bar:
         while len(song_list) < num_songs and total_attempts < max_total_attempts:
             total_attempts += 1
-            active_config = build_random_song_generator_random_config(options) if mode == "random-configs" else config
+            active_config = build_random_song_generator_default_config() if mode == "default-config" else config
             track, meta_data = fetch_random_song_generator_track(active_config)
             if not track:
                 print(f"random-song.com did not return a track for config: {active_config}")
@@ -1135,7 +1131,7 @@ def main():
             cache_file = None
             print("Choose your Surprise Me mode:")
             print("1. Random emotions/genres searched through public playlists")
-            print("2. random-song.com with completely random configurations")
+            print("2. random-song.com with its default random configuration")
             print("3. random-song.com with custom configuration")
             surprise_mode = input("Enter 1, 2, or 3: ").strip()
 
@@ -1162,8 +1158,8 @@ def main():
                 keywords = random_keywords
                 source_description = 'Surprise Me (Random Emotions/Genres)'
             elif surprise_mode == '2':
-                source_description = 'Surprise Me (random-song.com Random Configs)'
-                surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="random-configs")
+                source_description = 'Surprise Me (random-song.com Default Random Config)'
+                surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="default-config")
             elif surprise_mode == '3':
                 options = fetch_random_song_generator_options()
                 custom_config = prompt_for_random_song_generator_config(options)
