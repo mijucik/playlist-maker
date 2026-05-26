@@ -607,15 +607,6 @@ def render_page(form, status="Ready."):
       border-radius: 12px;
       background: white;
     }}
-    .pill-links a {{
-      display: inline-block;
-      margin: 0 8px 8px 0;
-      padding: 8px 12px;
-      border-radius: 999px;
-      background: #edf4ee;
-      color: #1f7a4d;
-      text-decoration: none;
-    }}
     @media (max-width: 720px) {{
       .grid {{
         grid-template-columns: 1fr;
@@ -821,12 +812,6 @@ def render_page(form, status="Ready."):
       <div class="row" id="artifact-actions"></div>
       <iframe id="artifact-frame" class="hidden"></iframe>
     </div>
-
-    <div class="card hidden" id="links-card">
-      <h2>Collected Links</h2>
-      <div class="row" id="link-action-row"></div>
-      <div class="pill-links" id="links-list"></div>
-    </div>
   </div>
   <script>
     let currentSessionId = null;
@@ -864,9 +849,6 @@ def render_page(form, status="Ready."):
     const artifactCard = document.getElementById("artifact-card");
     const artifactActions = document.getElementById("artifact-actions");
     const artifactFrame = document.getElementById("artifact-frame");
-    const linksCard = document.getElementById("links-card");
-    const linkActionRow = document.getElementById("link-action-row");
-    const linksList = document.getElementById("links-list");
 
     function setHidden(element, shouldHide) {{
       element.classList.toggle("hidden", shouldHide);
@@ -911,48 +893,6 @@ def render_page(form, status="Ready."):
     function setRunningState(isRunning) {{
       runButton.disabled = isRunning;
       cancelButton.classList.toggle("hidden", !isRunning);
-    }}
-
-    function openLinks(urls) {{
-      urls.forEach((url) => window.open(url, "_blank"));
-    }}
-
-    function renderLinks(data) {{
-      const spotifyLinks = data.spotify_links || [];
-      const youtubeLinks = data.youtube_links || [];
-      const allLinks = [...spotifyLinks, ...youtubeLinks];
-      setHidden(linksCard, allLinks.length === 0);
-      if (allLinks.length === 0) {{
-        linksList.innerHTML = "";
-        linkActionRow.innerHTML = "";
-        return;
-      }}
-
-      linkActionRow.innerHTML = "";
-      if (spotifyLinks.length) {{
-        const openSpotify = document.createElement("button");
-        openSpotify.type = "button";
-        openSpotify.textContent = `Open all Spotify links (${{spotifyLinks.length}})`;
-        openSpotify.addEventListener("click", () => openLinks(spotifyLinks));
-        linkActionRow.appendChild(openSpotify);
-      }}
-      if (youtubeLinks.length) {{
-        const openYoutube = document.createElement("button");
-        openYoutube.type = "button";
-        openYoutube.textContent = `Open all YouTube links (${{youtubeLinks.length}})`;
-        openYoutube.addEventListener("click", () => openLinks(youtubeLinks));
-        linkActionRow.appendChild(openYoutube);
-      }}
-      if (spotifyLinks.length && youtubeLinks.length) {{
-        const openAll = document.createElement("button");
-        openAll.type = "button";
-        openAll.className = "secondary";
-        openAll.textContent = "Open all links";
-        openAll.addEventListener("click", () => openLinks(allLinks));
-        linkActionRow.appendChild(openAll);
-      }}
-
-      linksList.innerHTML = allLinks.map((url) => `<a href="${{url}}" target="_blank" rel="noreferrer">${{url}}</a>`).join("");
     }}
 
     function renderArtifact(data) {{
@@ -1019,7 +959,6 @@ def render_page(form, status="Ready."):
       terminalOutput.scrollTop = terminalOutput.scrollHeight;
       renderPrompt(data);
       renderArtifact(data);
-      renderLinks(data);
 
       if (data.finished) {{
         setRunningState(false);
@@ -1056,7 +995,6 @@ def render_page(form, status="Ready."):
       currentSessionId = data.session_id;
       terminalOutput.textContent = "";
       renderArtifact({{}});
-      renderLinks({{ spotify_links: [], youtube_links: [] }});
       renderPrompt({{ prompt: null }});
       statusText.textContent = "Run started...";
       pollSession();

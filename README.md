@@ -119,7 +119,6 @@ The web app lets people:
 - watch the run happen in a live web terminal instead of waiting for one final dump
 - answer follow-up prompts like cache refresh, playlist creation, and playlist naming directly in the browser
 - preview generated HTML output inside the web app and open generated files from there
-- open collected Spotify and YouTube links from browser buttons instead of losing that functionality
 - open the local launcher in a browser automatically
 
 ### 4. Create a Spotify app
