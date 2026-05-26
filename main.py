@@ -27,6 +27,7 @@ DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 SCOPE = "user-read-private playlist-read-private playlist-modify-private playlist-modify-public"
 RANDOM_SONG_API_BASE_URL = "https://europe-west1-randommusicgenerator-34646.cloudfunctions.net/appV2"
 REQUIRED_SCOPE_SET = set(SCOPE.split())
+SPOTIFY_PLAYLIST_SEARCH_LIMIT = 10
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -684,6 +685,33 @@ def find_spotify_url(song):
     return spotify_url, bool(spotify_url)
 
 
+def find_spotify_track_for_song(song):
+    if song.get('spotify_url'):
+        spotify_url = song['spotify_url']
+        track_id = spotify_url.rstrip('/').split('/')[-1].split('?')[0]
+        if track_id:
+            return f"spotify:track:{track_id}"
+
+    search_queries = [
+        f"track:{song['title']} artist:{song['artists']}",
+        f"track:{song['title']}",
+        f"{song['title']} {song['artists']}",
+    ]
+
+    for query in search_queries:
+        try:
+            result = sp.search(q=query, type='track', limit=5)
+        except spotipy.exceptions.SpotifyException as error:
+            print(f"Error searching for track with query '{query}': {error}")
+            continue
+
+        tracks = result.get('tracks', {}).get('items', [])
+        if tracks:
+            return tracks[0].get('uri')
+
+    return None
+
+
 def attach_platform_links(selected_songs, link_platform):
     if link_platform in {'spotify', 'both'}:
         print("Looking up Spotify links for the selected songs...")
@@ -773,8 +801,9 @@ def maybe_open_platform_links(selected_songs, link_platform):
 
 
 # Function to search public playlists by multiple keywords/phrases in combinations
-def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_size=None):
+def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_size=None, candidate_multiplier=5):
     playlists = []
+    target_candidate_count = max(max_playlists * candidate_multiplier, max_playlists)
 
     # Generate unique single-keyword and pairwise search combinations.
     keyword_combinations = []
@@ -793,7 +822,7 @@ def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_si
     # Now rotate through combinations of keywords
     for keyword_combo in keyword_combinations:
         print(f"Searching for playlists with the combination: {keyword_combo}")
-        results = sp.search(q=keyword_combo, type='playlist', limit=min(max_playlists, 50))  # Use min to ensure we don't exceed Spotify's 50 limit
+        results = sp.search(q=keyword_combo, type='playlist', limit=min(target_candidate_count, SPOTIFY_PLAYLIST_SEARCH_LIMIT))
         playlist_results = results.get('playlists', {})
 
         if 'items' in playlist_results:
@@ -804,7 +833,7 @@ def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_si
             )
 
         # Handle pagination for more playlists
-        while playlist_results.get('next') and len(playlists) < max_playlists:
+        while playlist_results.get('next') and len(playlists) < target_candidate_count:
             results = sp.next(playlist_results)
             playlist_results = results
             if 'items' in results:
@@ -813,7 +842,7 @@ def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_si
                     for playlist in results['items']
                     if isinstance(playlist, dict) and playlist.get('id')
                 )
-            if len(playlists) >= max_playlists:
+            if len(playlists) >= target_candidate_count:
                 break
 
     # Remove duplicates based on playlist ID
@@ -849,6 +878,7 @@ def fetch_songs_from_public_playlists_by_keywords(
 
     all_tracks = []
     playlist_count = 0
+    inaccessible_playlist_count = 0
 
     # Shuffle the order of the playlists to ensure randomness
     random.shuffle(playlists)
@@ -856,9 +886,14 @@ def fetch_songs_from_public_playlists_by_keywords(
     for playlist in playlists:
         if len(all_tracks) >= max_songs:
             break
+        if playlist_count >= max_playlists:
+            break
 
         print(f"Fetching tracks from playlist: {playlist['name']}")
         tracks = get_playlist_tracks(playlist['id'], playlist['name'])
+        if not tracks:
+            inaccessible_playlist_count += 1
+            continue
 
         # Limit the number of tracks fetched per playlist to avoid filling up from a single playlist
         limited_tracks = tracks[:max_tracks_per_playlist]
@@ -870,6 +905,12 @@ def fetch_songs_from_public_playlists_by_keywords(
         if len(all_tracks) >= max_songs:
             print(f"Reached the limit of {max_songs} tracks.")
             break
+
+    if inaccessible_playlist_count:
+        print(f"Skipped {inaccessible_playlist_count} public playlist(s) that returned no accessible tracks.")
+        if playlist_count == 0:
+            print("Spotify returned public playlist search results, but their track items were not accessible through the Web API for this app/session.")
+            print("If this keeps happening, use a different source option or one of the random-song.com Surprise Me modes.")
 
     print(f"Fetched {len(all_tracks)} tracks from {playlist_count} playlists matching the keywords/phrases {', '.join(keywords)}")
 
@@ -902,7 +943,19 @@ def create_spotify_playlist(selected_songs):
         playlist_name = "New Playlist"
         print(f"No name entered. Using default name: {playlist_name}")
 
-    # Create the playlist
+    track_uris = []
+    for song in selected_songs:
+        track_uri = find_spotify_track_for_song(song)
+        if track_uri:
+            track_uris.append(track_uri)
+        else:
+            print(f"Track not found: {song['title']} by {song['artists']}")
+
+    if not track_uris:
+        print("No tracks were found to add, so the playlist was not created.")
+        return
+
+    # Create the playlist only after we know there is something to add.
     try:
         playlist = sp.current_user_playlist_create(playlist_name, public=False)
         print(f"Playlist '{playlist_name}' created successfully.")
@@ -917,26 +970,6 @@ def create_spotify_playlist(selected_songs):
             print("This script requests playlist-modify-private and now creates playlists through the current-user endpoint.")
             print("Delete ~/.spotify-scripts/token_cache.json and run the script again to force a fresh Spotify consent flow.")
             print(f"Authenticated user during this run: {user_id}")
-        return
-
-    # Collect track URIs
-    track_uris = []
-    for song in selected_songs:
-        # Search for the track
-        query = f"track:{song['title']} artist:{song['artists']}"
-        try:
-            result = sp.search(q=query, type='track', limit=1)
-            tracks = result.get('tracks', {}).get('items', [])
-            if tracks:
-                track_uri = tracks[0]['uri']
-                track_uris.append(track_uri)
-            else:
-                print(f"Track not found: {song['title']} by {song['artists']}")
-        except spotipy.exceptions.SpotifyException as e:
-            print(f"Error searching for track: {e}")
-
-    if not track_uris:
-        print("No tracks were found to add to the playlist.")
         return
 
     # Add tracks to the playlist in batches of up to 100
