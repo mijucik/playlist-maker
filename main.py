@@ -808,7 +808,13 @@ def maybe_open_platform_links(selected_songs, link_platform):
 
 
 # Function to search public playlists by multiple keywords/phrases in combinations
-def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_size=None, candidate_multiplier=5):
+def search_public_playlists_by_keywords(
+    keywords,
+    max_playlists,
+    min_playlist_size=None,
+    max_playlist_size=None,
+    candidate_multiplier=5,
+):
     playlists = []
     target_candidate_count = max(max_playlists * candidate_multiplier, max_playlists)
 
@@ -855,17 +861,32 @@ def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_si
     # Remove duplicates based on playlist ID
     unique_playlists = list({p['id']: p for p in playlists}.values())
 
-    if max_playlist_size is not None:
+    if min_playlist_size is not None or max_playlist_size is not None:
         filtered_playlists = []
         skipped_playlists = 0
         for playlist in unique_playlists:
             total_tracks = playlist.get('tracks', {}).get('total')
-            if isinstance(total_tracks, int) and total_tracks <= max_playlist_size:
-                filtered_playlists.append(playlist)
-            else:
+            if not isinstance(total_tracks, int):
                 skipped_playlists += 1
+                continue
+
+            if min_playlist_size is not None and total_tracks < min_playlist_size:
+                skipped_playlists += 1
+                continue
+
+            if max_playlist_size is not None and total_tracks > max_playlist_size:
+                skipped_playlists += 1
+                continue
+
+            if isinstance(total_tracks, int):
+                filtered_playlists.append(playlist)
         unique_playlists = filtered_playlists
-        print(f"Skipped {skipped_playlists} public playlists with more than {max_playlist_size} songs.")
+        size_bits = []
+        if min_playlist_size is not None:
+            size_bits.append(f"fewer than {min_playlist_size}")
+        if max_playlist_size is not None:
+            size_bits.append(f"more than {max_playlist_size}")
+        print(f"Skipped {skipped_playlists} public playlists outside the requested size range ({' or '.join(size_bits)} songs).")
 
     print(f"Found {len(unique_playlists)} public playlists for keyword combinations: {', '.join(keywords)}")
     return unique_playlists
@@ -891,6 +912,34 @@ def normalize_song_key(title, artists):
     normalized_title = re.sub(r"\s+", " ", (title or "").strip().lower())
     normalized_artists = re.sub(r"\s+", " ", (artists or "").strip().lower())
     return normalized_title, normalized_artists
+
+
+def tokenize_for_match(text):
+    cleaned_text = re.sub(r"[^a-z0-9\s]", " ", (text or "").lower())
+    return {token for token in cleaned_text.split() if token}
+
+
+def spotify_match_is_plausible(song, track):
+    source_title_tokens = tokenize_for_match(song.get('title'))
+    matched_title_tokens = tokenize_for_match(track.get('name'))
+    if not source_title_tokens or not matched_title_tokens:
+        return False
+
+    title_overlap = source_title_tokens & matched_title_tokens
+    if len(title_overlap) < max(1, min(len(source_title_tokens), 2)):
+        return False
+
+    source_artists = (song.get('artists') or '').strip()
+    if source_artists and source_artists != 'Unknown Artist':
+        source_artist_tokens = tokenize_for_match(source_artists)
+        matched_artist_tokens = tokenize_for_match(' '.join(artist.get('name', '') for artist in track.get('artists', [])))
+        if source_artist_tokens and matched_artist_tokens and not (source_artist_tokens & matched_artist_tokens):
+            return False
+
+    if source_artists == 'Unknown Artist' and len(source_title_tokens) > 8 and len(title_overlap) < 3:
+        return False
+
+    return True
 
 
 def merge_song_candidates(song_map, songs, source_label):
@@ -946,7 +995,13 @@ def fetch_spotify_track_metadata_from_page(track_id):
     }
 
 
-def fetch_songs_from_spotify_public_playlist_pages(playlists, max_playlists, max_tracks_per_playlist, max_playlist_size=None):
+def fetch_songs_from_spotify_public_playlist_pages(
+    playlists,
+    max_playlists,
+    max_tracks_per_playlist,
+    min_playlist_size=None,
+    max_playlist_size=None,
+):
     global SPOTIFY_PUBLIC_TRACK_API_BLOCKED
     song_list = []
     playlists_used = 0
@@ -965,6 +1020,10 @@ def fetch_songs_from_spotify_public_playlist_pages(playlists, max_playlists, max
             continue
 
         playlist_name = scraped_playlist_name or playlist_name
+        if min_playlist_size is not None and len(track_ids) < min_playlist_size:
+            print(f"Skipping Spotify playlist '{playlist_name}' because it has only {len(track_ids)} songs.")
+            continue
+
         if max_playlist_size is not None and len(track_ids) > max_playlist_size:
             print(f"Skipping Spotify playlist '{playlist_name}' because it has {len(track_ids)} songs.")
             continue
@@ -1157,7 +1216,13 @@ def is_likely_youtube_song(song):
     return score >= 2
 
 
-def fetch_songs_from_youtube_public_playlists(playlist_ids, max_playlists, max_tracks_per_playlist, max_playlist_size=None):
+def fetch_songs_from_youtube_public_playlists(
+    playlist_ids,
+    max_playlists,
+    max_tracks_per_playlist,
+    min_playlist_size=None,
+    max_playlist_size=None,
+):
     song_list = []
     playlists_used = 0
     playlist_pattern = re.compile(
@@ -1188,6 +1253,10 @@ def fetch_songs_from_youtube_public_playlists(playlist_ids, max_playlists, max_t
                 continue
             seen_video_ids.add(video_id)
             unique_titles.append(raw_title)
+
+        if min_playlist_size is not None and len(unique_titles) < min_playlist_size:
+            print(f"Skipping YouTube playlist '{playlist_id}' because it has only {len(unique_titles)} songs/videos.")
+            continue
 
         if max_playlist_size is not None and len(unique_titles) > max_playlist_size:
             print(f"Skipping YouTube playlist '{playlist_id}' because it has {len(unique_titles)} songs/videos.")
@@ -1267,7 +1336,15 @@ def resolve_song_on_spotify(song, suppress_errors=False):
         if not tracks:
             continue
 
-        track = tracks[0]
+        track = None
+        for candidate_track in tracks:
+            if spotify_match_is_plausible(song, candidate_track):
+                track = candidate_track
+                break
+
+        if track is None:
+            continue
+
         spotify_match = {
             'spotify_url': track.get('external_urls', {}).get('spotify'),
             'spotify_uri': track.get('uri'),
@@ -1424,6 +1501,7 @@ def fetch_songs_from_public_playlists_by_keywords(
     max_playlists=15,
     max_songs=500,
     max_tracks_per_playlist=35,
+    min_playlist_size=None,
     max_playlist_size=None,
     discovery_mode=DEFAULT_PUBLIC_DISCOVERY_MODE,
 ):
@@ -1434,6 +1512,7 @@ def fetch_songs_from_public_playlists_by_keywords(
         spotify_public_playlists = search_public_playlists_by_keywords(
             keywords,
             max_playlists,
+            min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
         )
         random.shuffle(spotify_public_playlists)
@@ -1441,6 +1520,7 @@ def fetch_songs_from_public_playlists_by_keywords(
             spotify_public_playlists,
             max_playlists=max_playlists,
             max_tracks_per_playlist=max_tracks_per_playlist,
+            min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
         )
         merge_song_candidates(song_map, spotify_playlist_songs, "spotify-public-playlists")
@@ -1451,6 +1531,7 @@ def fetch_songs_from_public_playlists_by_keywords(
             youtube_playlist_ids,
             max_playlists=max_playlists,
             max_tracks_per_playlist=max_tracks_per_playlist,
+            min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
         )
         merge_song_candidates(song_map, youtube_playlist_songs, "youtube-playlists")
@@ -1554,6 +1635,25 @@ def prompt_for_optional_positive_number(prompt_text):
             return parsed_value
 
         print("Please enter a positive number or press Enter for no limit.")
+
+
+def prompt_for_playlist_size_range():
+    min_playlist_size = prompt_for_optional_positive_number(
+        "Only use public playlists with at least how many songs? (Press Enter for no limit): "
+    )
+    max_playlist_size = prompt_for_optional_positive_number(
+        "Only use public playlists with at most how many songs? (Press Enter for no limit): "
+    )
+
+    if (
+        min_playlist_size is not None
+        and max_playlist_size is not None
+        and min_playlist_size > max_playlist_size
+    ):
+        print("Minimum playlist size cannot be greater than maximum playlist size.")
+        return None, None, False
+
+    return min_playlist_size, max_playlist_size, True
 
 
 def write_song_links_to_console(song, indent=""):
@@ -1678,6 +1778,7 @@ def main():
     max_playlists = None
     max_tracks_per_playlist = None
     max_songs = None
+    min_playlist_size = None
     max_playlist_size = None
     keywords = None
     surprise_song_list = None
@@ -1714,9 +1815,9 @@ def main():
                 except ValueError:
                     print("Invalid input. Please enter a positive number.")
 
-            max_playlist_size = prompt_for_optional_positive_number(
-                "Only use public playlists with at most how many songs? (Press Enter for no limit): "
-            )
+            min_playlist_size, max_playlist_size, valid_range = prompt_for_playlist_size_range()
+            if not valid_range:
+                return
             public_discovery_mode = prompt_for_public_discovery_mode()
             max_songs = 20 * max_playlists
             max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
@@ -1745,9 +1846,9 @@ def main():
                     except ValueError:
                         print("Invalid input. Please enter a positive number.")
 
-                max_playlist_size = prompt_for_optional_positive_number(
-                    "Only use public playlists with at most how many songs? (Press Enter for no limit): "
-                )
+                min_playlist_size, max_playlist_size, valid_range = prompt_for_playlist_size_range()
+                if not valid_range:
+                    return
                 public_discovery_mode = prompt_for_public_discovery_mode()
                 max_songs = 20 * max_playlists
                 max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
@@ -1781,6 +1882,7 @@ def main():
             max_playlists=max_playlists,
             max_songs=max_songs,
             max_tracks_per_playlist=max_tracks_per_playlist,
+            min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
             discovery_mode=public_discovery_mode,
         )

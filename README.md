@@ -43,9 +43,43 @@ If you use Homebrew on macOS:
 brew install python git
 ```
 
+On Windows:
+
+- Install `Git for Windows` from [git-scm.com](https://git-scm.com/downloads/win)
+- Install Python 3 from [python.org](https://www.python.org/downloads/windows/)
+- Make sure `Add python.exe to PATH` is enabled during install
+
+Then verify in `PowerShell`:
+
+```powershell
+git --version
+python --version
+python -m pip --version
+```
+
+On Ubuntu/Debian Linux:
+
+```bash
+sudo apt update
+sudo apt install -y git python3 python3-pip
+```
+
+On Fedora:
+
+```bash
+sudo dnf install -y git python3 python3-pip
+```
+
 ### 2. Clone the repository
 
 ```bash
+git clone https://github.com/mijucik/spotify-playlist-picker.git
+cd spotify-playlist-picker
+```
+
+On Windows PowerShell:
+
+```powershell
 git clone https://github.com/mijucik/spotify-playlist-picker.git
 cd spotify-playlist-picker
 ```
@@ -54,6 +88,12 @@ cd spotify-playlist-picker
 
 ```bash
 python3 -m pip install -r requirements.txt
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m pip install -r requirements.txt
 ```
 
 ### 4. Create a Spotify app
@@ -95,6 +135,15 @@ export SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
 python3 main.py
 ```
 
+On Windows PowerShell:
+
+```powershell
+$env:SPOTIPY_CLIENT_ID="your-client-id"
+$env:SPOTIPY_CLIENT_SECRET="your-client-secret"
+$env:SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
+python main.py
+```
+
 You can also use [.env.example](/Users/kevintang/Downloads/spotify-scripts-main/.env.example:1) as a reference, but this project does not auto-load `.env` files.
 
 ### 6. Authorize the app in your browser
@@ -108,6 +157,13 @@ Once dependencies are installed, the normal command is:
 ```bash
 cd spotify-playlist-picker
 python3 main.py
+```
+
+On Windows PowerShell:
+
+```powershell
+cd spotify-playlist-picker
+python main.py
 ```
 
 ## Security improvements
@@ -137,8 +193,9 @@ Useful flows:
 - `2` filters your own playlists by `Rediscover`, `contains`, or `regex`
 - `5` searches public music sources by keywords
 - `5` supports `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
+- `5` and the public `Surprise me` mode both support minimum and maximum playlist-size filters
 - `6` includes public-discovery surprise mode plus two `random-song.com` modes
-- public discovery can skip very large playlists with a maximum playlist size
+- public discovery can limit playlists to a size range with both minimum and maximum song counts
 - after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or both
 
 ## Notes
