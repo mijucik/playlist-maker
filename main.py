@@ -494,27 +494,100 @@ def find_youtube_url(song):
     return search_url, False
 
 
-def attach_youtube_links(selected_songs):
-    print("Looking up YouTube links for the selected songs...")
-    for song in tqdm(selected_songs, desc='Finding YouTube links', unit='song'):
-        youtube_url, found_exact_video = find_youtube_url(song)
-        song['youtube_url'] = youtube_url
-        song['youtube_found_exact_video'] = found_exact_video
+def find_spotify_url(song):
+    query = f"track:{song['title']} artist:{song['artists']}"
+    try:
+        result = sp.search(q=query, type='track', limit=1)
+    except spotipy.exceptions.SpotifyException as error:
+        print(f"Could not search Spotify for {song['title']} by {song['artists']}: {error}")
+        return None, False
+
+    tracks = result.get('tracks', {}).get('items', [])
+    if not tracks:
+        return None, False
+
+    spotify_url = tracks[0].get('external_urls', {}).get('spotify')
+    return spotify_url, bool(spotify_url)
 
 
-def maybe_open_youtube_links(selected_songs):
-    open_choice = input("Do you want to open YouTube link(s) now? (yes/no): ").strip().lower()
+def attach_platform_links(selected_songs, link_platform):
+    if link_platform in {'spotify', 'both'}:
+        print("Looking up Spotify links for the selected songs...")
+        for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
+            spotify_url, found_exact_track = find_spotify_url(song)
+            song['spotify_url'] = spotify_url
+            song['spotify_found_exact_track'] = found_exact_track
+
+    if link_platform in {'youtube', 'both'}:
+        print("Looking up YouTube links for the selected songs...")
+        for song in tqdm(selected_songs, desc='Finding YouTube links', unit='song'):
+            youtube_url, found_exact_video = find_youtube_url(song)
+            song['youtube_url'] = youtube_url
+            song['youtube_found_exact_video'] = found_exact_video
+
+
+def prompt_for_link_platform():
+    print("Do you want to look up links for the selected songs?")
+    print("1. No links")
+    print("2. Spotify links")
+    print("3. YouTube links")
+    print("4. Both Spotify and YouTube")
+    link_choice = input("Enter 1, 2, 3, or 4: ").strip()
+
+    if link_choice == '1':
+        return None
+    if link_choice == '2':
+        return 'spotify'
+    if link_choice == '3':
+        return 'youtube'
+    if link_choice == '4':
+        return 'both'
+
+    print("Invalid choice. Skipping link lookup.")
+    return None
+
+
+def maybe_open_platform_links(selected_songs, link_platform):
+    if not link_platform:
+        return
+
+    platform_label = {
+        'spotify': 'Spotify',
+        'youtube': 'YouTube',
+        'both': 'Spotify/YouTube',
+    }[link_platform]
+    open_choice = input(f"Do you want to open {platform_label} link(s) now? (yes/no): ").strip().lower()
     if open_choice != 'yes':
         return
 
+    if link_platform == 'both':
+        preferred_platform = input("Which platform should be opened first? (Enter 'spotify' or 'youtube'): ").strip().lower()
+        if preferred_platform not in {'spotify', 'youtube'}:
+            preferred_platform = 'spotify'
+        secondary_platform = 'youtube' if preferred_platform == 'spotify' else 'spotify'
+    else:
+        preferred_platform = link_platform
+        secondary_platform = None
+
+    def get_song_url(song):
+        if preferred_platform == 'spotify' and song.get('spotify_url'):
+            return song.get('spotify_url')
+        if preferred_platform == 'youtube' and song.get('youtube_url'):
+            return song.get('youtube_url')
+        if secondary_platform == 'spotify' and song.get('spotify_url'):
+            return song.get('spotify_url')
+        if secondary_platform == 'youtube' and song.get('youtube_url'):
+            return song.get('youtube_url')
+        return None
+
     if len(selected_songs) == 1:
-        urls_to_open = [selected_songs[0].get('youtube_url')]
+        urls_to_open = [get_song_url(selected_songs[0])]
     else:
         open_all_choice = input("Open all song links? (yes/no): ").strip().lower()
         if open_all_choice == 'yes':
-            urls_to_open = [song.get('youtube_url') for song in selected_songs]
+            urls_to_open = [get_song_url(song) for song in selected_songs]
         else:
-            urls_to_open = [selected_songs[0].get('youtube_url')]
+            urls_to_open = [get_song_url(selected_songs[0])]
 
     opened_count = 0
     for url in urls_to_open:
@@ -522,7 +595,7 @@ def maybe_open_youtube_links(selected_songs):
             webbrowser.open(url)
             opened_count += 1
 
-    print(f"Opened {opened_count} YouTube link(s) in your browser.")
+    print(f"Opened {opened_count} link(s) in your browser.")
 
 
 # Function to search public playlists by multiple keywords/phrases in combinations
@@ -724,6 +797,35 @@ def prompt_for_optional_positive_number(prompt_text):
         print("Please enter a positive number or press Enter for no limit.")
 
 
+def write_song_links_to_console(song, indent=""):
+    if song.get('spotify_url'):
+        label = "direct track" if song.get('spotify_found_exact_track') else "search result"
+        print(f"{indent}Spotify ({label}): {song['spotify_url']}")
+    if song.get('youtube_url'):
+        label = "direct video" if song.get('youtube_found_exact_video') else "search results"
+        print(f"{indent}YouTube ({label}): {song['youtube_url']}")
+
+
+def write_song_links_to_text_file(song, file_handle, indent=""):
+    if song.get('spotify_url'):
+        label = "direct track" if song.get('spotify_found_exact_track') else "search result"
+        file_handle.write(f"{indent}Spotify ({label}): {song['spotify_url']}\n")
+    if song.get('youtube_url'):
+        label = "direct video" if song.get('youtube_found_exact_video') else "search results"
+        file_handle.write(f"{indent}YouTube ({label}): {song['youtube_url']}\n")
+
+
+def build_song_links_html(song):
+    links = []
+    if song.get('spotify_url'):
+        label = "Open in Spotify" if song.get('spotify_found_exact_track') else "Spotify result"
+        links.append(f"""<a href="{song['spotify_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
+    if song.get('youtube_url'):
+        label = "Watch on YouTube" if song.get('youtube_found_exact_video') else "Search on YouTube"
+        links.append(f"""<a href="{song['youtube_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
+    return " | ".join(links)
+
+
 def prompt_for_optional_positive_int(prompt_text, default_value):
     while True:
         raw_value = input(f"{prompt_text} [{default_value}]: ").strip()
@@ -778,6 +880,7 @@ def print_project_summary():
     print("- Pulls songs from your Spotify playlists or from public playlists.")
     print("- Randomly picks one or more songs from that pool.")
     print("- Can filter your own playlists by name using a preset, simple text, or regex.")
+    print("- Can look up selected songs on Spotify, YouTube, or both.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
 
@@ -950,17 +1053,15 @@ def main():
         selected_songs = random.sample(song_list, num_songs)
         print(f"Selected {num_songs} songs.")
 
-    youtube_lookup_choice = input("Do you want to look for these songs on YouTube? (yes/no): ").strip().lower()
-    if youtube_lookup_choice == 'yes':
-        attach_youtube_links(selected_songs)
+    link_platform = prompt_for_link_platform()
+    if link_platform:
+        attach_platform_links(selected_songs, link_platform)
 
     if num_songs == 1:
         # Output the single song
         random_song = selected_songs[0]
         print(f"\nHere is your song from {source_description}:\n1. {random_song['title']} by {random_song['artists']}")
-        if random_song.get('youtube_url'):
-            label = "direct video" if random_song.get('youtube_found_exact_video') else "search results"
-            print(f"YouTube ({label}): {random_song['youtube_url']}")
+        write_song_links_to_console(random_song)
         if source_choice == '4':
             print(f"Selected from playlists: {', '.join(selected_playlists)}")
     else:
@@ -974,9 +1075,7 @@ def main():
                 song_title = song['title']
                 song_artists = song['artists']
                 print(f"{idx}. {song_title} by {song_artists}")
-                if song.get('youtube_url'):
-                    label = "direct video" if song.get('youtube_found_exact_video') else "search results"
-                    print(f"   YouTube ({label}): {song['youtube_url']}")
+                write_song_links_to_console(song, indent="   ")
             if source_choice == '4':
                 print(f"\nSelected from playlists: {', '.join(selected_playlists)}")
 
@@ -1022,9 +1121,7 @@ def main():
                             song_title = song['title']
                             song_artists = song['artists']
                             f.write(f"{idx}. {song_title} by {song_artists}\n")
-                            if song.get('youtube_url'):
-                                label = "direct video" if song.get('youtube_found_exact_video') else "search results"
-                                f.write(f"   YouTube ({label}): {song['youtube_url']}\n")
+                            write_song_links_to_text_file(song, f, indent="   ")
                     print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
                 except Exception as e:
                     print(f"Failed to write to file '{abs_filepath}': {e}")
@@ -1097,9 +1194,9 @@ def main():
                         song_title = song['title']
                         song_artists = song['artists']
                         html_content += f"        <li>{song_title} by {song_artists}"
-                        if song.get('youtube_url'):
-                            label = "Watch on YouTube" if song.get('youtube_found_exact_video') else "Search on YouTube"
-                            html_content += f"""<br><a href="{song['youtube_url']}" target="_blank" rel="noopener noreferrer">{label}</a>"""
+                        html_links = build_song_links_html(song)
+                        if html_links:
+                            html_content += f"<br>{html_links}"
                         html_content += "</li>\n"
 
                     html_content += """    </ol>
@@ -1137,8 +1234,8 @@ def main():
     if create_playlist_choice == 'yes':
         create_spotify_playlist(selected_songs)
 
-    if any(song.get('youtube_url') for song in selected_songs):
-        maybe_open_youtube_links(selected_songs)
+    if any(song.get('spotify_url') or song.get('youtube_url') for song in selected_songs):
+        maybe_open_platform_links(selected_songs, link_platform)
 
 
 if __name__ == "__main__":
