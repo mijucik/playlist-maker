@@ -58,3 +58,4 @@ export SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
 - `main.py` is the best entrypoint to use.
 - The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
 - The old root-level `.cache` file was Spotipy's token cache format.
+# spotify-playlist-picker
