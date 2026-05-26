@@ -868,6 +868,62 @@ def search_public_playlists_by_keywords(keywords, max_playlists, max_playlist_si
     return unique_playlists
 
 
+def build_keyword_combinations(keywords):
+    keyword_combinations = []
+    seen_combinations = set()
+    for i in range(len(keywords)):
+        for j in range(i, len(keywords)):
+            if i != j:
+                combined_keywords = f"{keywords[i]} {keywords[j]}"
+                if combined_keywords not in seen_combinations:
+                    keyword_combinations.append(combined_keywords)
+                    seen_combinations.add(combined_keywords)
+            if keywords[i] not in seen_combinations:
+                keyword_combinations.append(keywords[i])
+                seen_combinations.add(keywords[i])
+    return keyword_combinations
+
+
+def search_tracks_by_keywords(keywords, max_songs):
+    print("Falling back to direct Spotify track search...")
+    song_list = []
+    seen_song_keys = set()
+    keyword_combinations = build_keyword_combinations(keywords)
+
+    for keyword_combo in keyword_combinations:
+        print(f"Searching tracks with: {keyword_combo}")
+        try:
+            results = sp.search(q=keyword_combo, type='track', limit=min(max_songs, 10))
+        except spotipy.exceptions.SpotifyException as error:
+            print(f"Error searching tracks for '{keyword_combo}': {error}")
+            continue
+
+        tracks = results.get('tracks', {}).get('items', [])
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+
+            track_name = track.get('name') or 'Unknown Title'
+            artist_names = [artist.get('name', 'Unknown Artist') for artist in track.get('artists', [])]
+            artists = ', '.join(artist_names)
+            song_key = (track_name, artists)
+            if song_key in seen_song_keys:
+                continue
+
+            seen_song_keys.add(song_key)
+            song_list.append({
+                'title': track_name,
+                'artists': artists,
+                'spotify_url': track.get('external_urls', {}).get('spotify'),
+                'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')),
+            })
+
+            if len(song_list) >= max_songs:
+                return song_list
+
+    return song_list
+
+
 
 # Function to fetch songs from public playlists by multiple keywords/phrases without caching
 def fetch_songs_from_public_playlists_by_keywords(
@@ -914,14 +970,20 @@ def fetch_songs_from_public_playlists_by_keywords(
         print(f"Skipped {inaccessible_playlist_count} public playlist(s) that returned no accessible tracks.")
         if playlist_count == 0:
             print("Spotify returned public playlist search results, but their track items were not accessible through the Web API for this app/session.")
-            print("If this keeps happening, use a different source option or one of the random-song.com Surprise Me modes.")
+            print("Trying a direct track-search fallback instead.")
 
     print(f"Fetched {len(all_tracks)} tracks from {playlist_count} playlists matching the keywords/phrases {', '.join(keywords)}")
+
+    if not all_tracks:
+        fallback_song_list = search_tracks_by_keywords(keywords, max_songs)
+        if fallback_song_list:
+            print(f"Recovered {len(fallback_song_list)} song(s) through direct Spotify track search.")
+        return fallback_song_list
 
     # Collect song names and artists
     song_list = []
     for item in all_tracks[:max_songs]:
-        track = item.get('track')
+        track = extract_track_from_playlist_item(item)
         if track:
             track_name = track.get('name') or 'Unknown Title'
             track_artists = track.get('artists', [])
