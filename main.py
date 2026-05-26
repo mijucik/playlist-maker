@@ -359,64 +359,67 @@ def build_filtered_playlist_cache_file(filter_label):
 
 
 def prompt_for_playlist_name_filter():
-    print("Choose how to match playlist names:")
-    print("1. Rediscover preset")
-    print("2. Playlist name contains text")
-    print("3. Custom regex")
-    filter_choice = input("Enter 1, 2, or 3: ").strip()
+    while True:
+        print("Choose how to match playlist names:")
+        print("1. Rediscover preset")
+        print("2. Playlist name contains text")
+        print("3. Custom regex")
+        filter_choice = input("Enter 1, 2, or 3: ").strip()
 
-    if filter_choice == '1':
-        return {
-            'cache_file': 'song_cache_rediscover.json',
-            'fetcher': fetch_and_cache_rediscover_songs,
-            'description': 'Rediscover Playlists',
-        }
+        if filter_choice == '1':
+            return {
+                'cache_file': 'song_cache_rediscover.json',
+                'fetcher': fetch_and_cache_rediscover_songs,
+                'description': 'Rediscover Playlists',
+            }
 
-    if filter_choice == '2':
-        search_text = input("Enter text to look for in playlist names: ").strip()
-        if not search_text:
-            print("No text entered.")
-            return None
+        if filter_choice == '2':
+            while True:
+                search_text = input("Enter text to look for in playlist names: ").strip()
+                if search_text:
+                    break
+                print("Please enter some text.")
 
-        lowered_search_text = search_text.lower()
-        description = f"Playlists containing '{search_text}'"
-        cache_file = build_filtered_playlist_cache_file(f"contains_{search_text}")
-        return {
-            'cache_file': cache_file,
-            'fetcher': lambda selected_cache_file: fetch_and_cache_filtered_playlist_songs(
-                selected_cache_file,
-                playlist_filter=lambda playlist: lowered_search_text in playlist['name'].lower(),
-                filter_description=description,
-            ),
-            'description': description,
-        }
+            lowered_search_text = search_text.lower()
+            description = f"Playlists containing '{search_text}'"
+            cache_file = build_filtered_playlist_cache_file(f"contains_{search_text}")
+            return {
+                'cache_file': cache_file,
+                'fetcher': lambda selected_cache_file: fetch_and_cache_filtered_playlist_songs(
+                    selected_cache_file,
+                    playlist_filter=lambda playlist: lowered_search_text in playlist['name'].lower(),
+                    filter_description=description,
+                ),
+                'description': description,
+            }
 
-    if filter_choice == '3':
-        regex_input = input("Enter a regex for playlist names: ").strip()
-        if not regex_input:
-            print("No regex entered.")
-            return None
+        if filter_choice == '3':
+            while True:
+                regex_input = input("Enter a regex for playlist names: ").strip()
+                if not regex_input:
+                    print("Please enter a regex.")
+                    continue
 
-        try:
-            compiled_pattern = re.compile(regex_input, re.IGNORECASE)
-        except re.error as error:
-            print(f"Invalid regex: {error}")
-            return None
+                try:
+                    compiled_pattern = re.compile(regex_input, re.IGNORECASE)
+                except re.error as error:
+                    print(f"Invalid regex: {error}")
+                    continue
+                break
 
-        description = f"Playlists matching regex '{regex_input}'"
-        cache_file = build_filtered_playlist_cache_file(f"regex_{regex_input}")
-        return {
-            'cache_file': cache_file,
-            'fetcher': lambda selected_cache_file: fetch_and_cache_filtered_playlist_songs(
-                selected_cache_file,
-                playlist_filter=lambda playlist: bool(compiled_pattern.search(playlist['name'])),
-                filter_description=description,
-            ),
-            'description': description,
-        }
+            description = f"Playlists matching regex '{regex_input}'"
+            cache_file = build_filtered_playlist_cache_file(f"regex_{regex_input}")
+            return {
+                'cache_file': cache_file,
+                'fetcher': lambda selected_cache_file: fetch_and_cache_filtered_playlist_songs(
+                    selected_cache_file,
+                    playlist_filter=lambda playlist: bool(compiled_pattern.search(playlist['name'])),
+                    filter_description=description,
+                ),
+                'description': description,
+            }
 
-    print("Invalid choice.")
-    return None
+        print("Invalid choice.")
 
 
 # Function to fetch songs from random playlists
@@ -560,19 +563,23 @@ def prompt_for_random_song_generator_config(options):
     available_markets = [market.get("name") for market in options["markets"] if market.get("name")]
     available_decades = [decade.get("name") for decade in options["decades"] if decade.get("name")]
 
-    genre = input("Genre (example: ambient, rock, jazz) [random]: ").strip() or "random"
-    market = input("Market/country name (example: Germany, Japan) [random]: ").strip() or "random"
-    decade = input("Decade (example: 1990s, 2000s) [random]: ").strip() or "random"
-
-    if genre != "random" and genre not in available_genres and genre != "none":
+    while True:
+        genre = input("Genre (example: ambient, rock, jazz) [random]: ").strip() or "random"
+        if genre == "random" or genre == "none" or genre in available_genres:
+            break
         print("That genre is not in random-song.com's published list.")
-        return None
-    if market != "random" and market not in available_markets:
+
+    while True:
+        market = input("Market/country name (example: Germany, Japan) [random]: ").strip() or "random"
+        if market == "random" or market in available_markets:
+            break
         print("That market is not in random-song.com's published list.")
-        return None
-    if decade != "random" and decade != "all" and decade not in available_decades:
+
+    while True:
+        decade = input("Decade (example: 1990s, 2000s) [random]: ").strip() or "random"
+        if decade == "random" or decade == "all" or decade in available_decades:
+            break
         print("That decade is not in random-song.com's published list.")
-        return None
 
     tag_new = input("New releases only? (yes/no) [no]: ").strip().lower() == "yes"
     exclude_singles = input("Exclude singles? (yes/no) [no]: ").strip().lower() == "yes"
@@ -736,24 +743,24 @@ def attach_platform_links(selected_songs, link_platform):
 
 
 def prompt_for_link_platform():
-    print("Do you want to look up links for the selected songs?")
-    print("1. No links")
-    print("2. Spotify links")
-    print("3. YouTube links")
-    print("4. Both Spotify and YouTube")
-    link_choice = input("Enter 1, 2, 3, or 4: ").strip()
+    while True:
+        print("Do you want to look up links for the selected songs?")
+        print("1. No links")
+        print("2. Spotify links")
+        print("3. YouTube links")
+        print("4. Both Spotify and YouTube")
+        link_choice = input("Enter 1, 2, 3, or 4: ").strip()
 
-    if link_choice == '1':
-        return None
-    if link_choice == '2':
-        return 'spotify'
-    if link_choice == '3':
-        return 'youtube'
-    if link_choice == '4':
-        return 'both'
+        if link_choice == '1':
+            return None
+        if link_choice == '2':
+            return 'spotify'
+        if link_choice == '3':
+            return 'youtube'
+        if link_choice == '4':
+            return 'both'
 
-    print("Invalid choice. Skipping link lookup.")
-    return None
+        print("Invalid choice.")
 
 
 def maybe_open_platform_links(selected_songs, link_platform):
@@ -1638,22 +1645,23 @@ def prompt_for_optional_positive_number(prompt_text):
 
 
 def prompt_for_playlist_size_range():
-    min_playlist_size = prompt_for_optional_positive_number(
-        "Only use public playlists with at least how many songs? (Press Enter for no limit): "
-    )
-    max_playlist_size = prompt_for_optional_positive_number(
-        "Only use public playlists with at most how many songs? (Press Enter for no limit): "
-    )
+    while True:
+        min_playlist_size = prompt_for_optional_positive_number(
+            "Only use public playlists with at least how many songs? (Press Enter for no limit): "
+        )
+        max_playlist_size = prompt_for_optional_positive_number(
+            "Only use public playlists with at most how many songs? (Press Enter for no limit): "
+        )
 
-    if (
-        min_playlist_size is not None
-        and max_playlist_size is not None
-        and min_playlist_size > max_playlist_size
-    ):
-        print("Minimum playlist size cannot be greater than maximum playlist size.")
-        return None, None, False
+        if (
+            min_playlist_size is not None
+            and max_playlist_size is not None
+            and min_playlist_size > max_playlist_size
+        ):
+            print("Minimum playlist size cannot be greater than maximum playlist size.")
+            continue
 
-    return min_playlist_size, max_playlist_size, True
+        return min_playlist_size, max_playlist_size
 
 
 def write_song_links_to_console(song, indent=""):
@@ -1702,6 +1710,86 @@ def prompt_for_optional_positive_int(prompt_text, default_value):
 
         print("Please enter a positive number.")
 
+
+def prompt_for_num_songs():
+    while True:
+        num_songs_input = input("Do you want one song or more than one? (Enter 'one' or a number): ").strip()
+
+        if num_songs_input.lower() == 'one' or num_songs_input == '1':
+            return 1
+
+        try:
+            num_songs = int(num_songs_input)
+        except ValueError:
+            print("Invalid input. Please enter 'one' or a number.")
+            continue
+
+        if num_songs < 1:
+            print("Please enter 'one' or a positive number.")
+            continue
+
+        return num_songs
+
+
+def prompt_for_source_choice():
+    while True:
+        print("Choose the source of songs:")
+        print("1. All playlists")
+        print("2. Filter your playlists by name")
+        print("3. Your own playlists")
+        print("4. Random saved playlists")
+        print("5. Search public music sources by keywords/phrases")
+        print("6. Surprise me")
+        source_choice = input("Enter the number of your choice (1, 2, 3, 4, 5, or 6): ").strip()
+        if source_choice in {'1', '2', '3', '4', '5', '6'}:
+            return source_choice
+        print("Invalid choice.")
+
+
+def prompt_for_max_playlists():
+    while True:
+        try:
+            max_playlists = int(input("Enter the maximum number of playlists to search: ").strip())
+        except ValueError:
+            print("Invalid input. Please enter a positive number.")
+            continue
+
+        if max_playlists > 0:
+            return max_playlists
+
+        print("Please enter a positive number.")
+
+
+def prompt_for_keywords():
+    while True:
+        keywords_input = input("Enter one or more keywords/phrases (separate by commas or enclose phrases in quotes): ").strip()
+        keywords = parse_keywords(keywords_input)
+        if keywords:
+            return keywords
+        print("Please enter at least one keyword or phrase.")
+
+
+def prompt_for_surprise_mode():
+    while True:
+        print("Choose your Surprise Me mode:")
+        print("1. Random emotions/genres searched through public playlists")
+        print("2. random-song.com with its default random configuration")
+        print("3. random-song.com with custom configuration")
+        surprise_mode = input("Enter 1, 2, or 3: ").strip()
+        if surprise_mode in {'1', '2', '3'}:
+            return surprise_mode
+        print("Invalid choice.")
+
+
+def prompt_for_output_format():
+    while True:
+        file_format = input("Do you want to generate a text file, an HTML file, or display in terminal? (Enter 'txt', 'html', or 'terminal'): ").strip().lower()
+        if file_format in {'txt', 'html', 'terminal'}:
+            return file_format
+        if file_format == 'n/a':
+            return file_format
+        print("Invalid file format choice. Please enter 'txt', 'html', 'terminal', or 'N/A'.")
+
 # List of emotions/genres for the "Surprise Me" option
 
 def generate_random_keywords():
@@ -1747,32 +1835,10 @@ def print_project_summary():
 def main():
     print_project_summary()
 
-    # Ask the user for input
-    num_songs_input = input("Do you want one song or more than one? (Enter 'one' or a number): ").strip()
-
-    if num_songs_input.lower() == 'one' or num_songs_input == '1':
-        num_songs = 1
-    else:
-        try:
-            num_songs = int(num_songs_input)
-            if num_songs < 1:
-                print("Please enter 'one' or a positive number.")
-                return
-        except ValueError:
-            print("Invalid input. Please enter 'one' or a number.")
-            return
-
+    num_songs = prompt_for_num_songs()
     print(f"Number of songs to fetch: {num_songs}")
 
-    # Ask the user which songs to use
-    print("Choose the source of songs:")
-    print("1. All playlists")
-    print("2. Filter your playlists by name")
-    print("3. Your own playlists")
-    print("4. Random saved playlists")
-    print("5. Search public music sources by keywords/phrases")
-    print("6. Surprise me")
-    source_choice = input("Enter the number of your choice (1, 2, 3, 4, 5, or 6): ").strip()
+    source_choice = prompt_for_source_choice()
 
     # Default values for max_playlists and max_tracks_per_playlist
     max_playlists = None
@@ -1805,19 +1871,8 @@ def main():
         source_description = 'Random Playlists'
     elif source_choice == '5' or source_choice == '6':
         if source_choice == '5':
-            while True:
-                try:
-                    max_playlists = int(input("Enter the maximum number of playlists to search: ").strip())
-                    if max_playlists > 0:
-                        break
-                    else:
-                        print("Please enter a positive number.")
-                except ValueError:
-                    print("Invalid input. Please enter a positive number.")
-
-            min_playlist_size, max_playlist_size, valid_range = prompt_for_playlist_size_range()
-            if not valid_range:
-                return
+            max_playlists = prompt_for_max_playlists()
+            min_playlist_size, max_playlist_size = prompt_for_playlist_size_range()
             public_discovery_mode = prompt_for_public_discovery_mode()
             max_songs = 20 * max_playlists
             max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
@@ -1825,30 +1880,14 @@ def main():
             # For option 5, we won't use cache
             cache_file = None
             source_description = f"Public Discovery by Keywords/Phrases ({describe_public_discovery_mode(public_discovery_mode)})"
-            keywords_input = input("Enter one or more keywords/phrases (separate by commas or enclose phrases in quotes): ").strip()
-            keywords = parse_keywords(keywords_input)
+            keywords = prompt_for_keywords()
         elif source_choice == '6':
             cache_file = None
-            print("Choose your Surprise Me mode:")
-            print("1. Random emotions/genres searched through public playlists")
-            print("2. random-song.com with its default random configuration")
-            print("3. random-song.com with custom configuration")
-            surprise_mode = input("Enter 1, 2, or 3: ").strip()
+            surprise_mode = prompt_for_surprise_mode()
 
             if surprise_mode == '1':
-                while True:
-                    try:
-                        max_playlists = int(input("Enter the maximum number of playlists to search: ").strip())
-                        if max_playlists > 0:
-                            break
-                        else:
-                            print("Please enter a positive number.")
-                    except ValueError:
-                        print("Invalid input. Please enter a positive number.")
-
-                min_playlist_size, max_playlist_size, valid_range = prompt_for_playlist_size_range()
-                if not valid_range:
-                    return
+                max_playlists = prompt_for_max_playlists()
+                min_playlist_size, max_playlist_size = prompt_for_playlist_size_range()
                 public_discovery_mode = prompt_for_public_discovery_mode()
                 max_songs = 20 * max_playlists
                 max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
@@ -1864,16 +1903,8 @@ def main():
             elif surprise_mode == '3':
                 options = fetch_random_song_generator_options()
                 custom_config = prompt_for_random_song_generator_config(options)
-                if not custom_config:
-                    return
                 source_description = 'Surprise Me (random-song.com Custom Config)'
                 surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="custom-config", config=custom_config)
-            else:
-                print("Invalid choice. Please run the script again and select a valid option.")
-                return
-    else:
-        print("Invalid choice. Please run the script again and select a valid option.")
-        return
 
     if source_choice == '5' or (source_choice == '6' and keywords is not None):
         # Handle option 5 and 6 without caching
@@ -1973,7 +2004,7 @@ def main():
             print(f"Selected from playlists: {', '.join(selected_playlists)}")
     else:
         # Ask for file format or terminal output
-        file_format = input("Do you want to generate a text file, an HTML file, or display in terminal? (Enter 'txt', 'html', or 'terminal'): ").strip().lower()
+        file_format = prompt_for_output_format()
 
         if file_format == 'terminal':
             # Display songs directly in the terminal
@@ -2131,10 +2162,6 @@ def main():
                             print("Unable to open the file automatically on this operating system.")
                     except Exception as e:
                         print(f"Failed to open the file: {e}")
-
-        else:
-            print("Invalid file format choice. Please enter 'txt', 'html', 'terminal', or 'N/A'.")
-            return
 
     # Ask the user if they want to create a Spotify playlist
     create_playlist_choice = input("Do you want to create a Spotify playlist with these songs? (yes/no): ").strip().lower()
