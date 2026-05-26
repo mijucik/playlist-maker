@@ -2,3 +2,6 @@
 .cache
 .spotify-scripts/
 __pycache__/
+.DS_Store
+generated/
+song_cache_*.json

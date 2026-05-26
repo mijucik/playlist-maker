@@ -8,6 +8,7 @@ import random
 import re
 import string
 import sys
+import tempfile
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -31,6 +32,7 @@ REQUIRED_SCOPE_SET = set(SCOPE.split())
 SPOTIFY_PLAYLIST_SEARCH_LIMIT = 10
 DEFAULT_PUBLIC_DISCOVERY_MODE = "hybrid"
 SPOTIFY_PUBLIC_TRACK_API_BLOCKED = False
+YOUTUBE_SEARCH_RESULT_LIMIT = 20
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -55,8 +57,13 @@ class SecureTokenCacheHandler(CacheHandler):
             return None
 
     def save_token_to_cache(self, token_info):
-        temp_path = self.cache_path.with_suffix(".tmp")
-        with temp_path.open("w", encoding="utf-8") as cache_file:
+        temp_fd, temp_name = tempfile.mkstemp(
+            prefix=f"{self.cache_path.stem}_",
+            suffix=".tmp",
+            dir=str(self.cache_path.parent),
+        )
+        temp_path = Path(temp_name)
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as cache_file:
             json.dump(token_info, cache_file)
         os.chmod(temp_path, 0o600)
         os.replace(temp_path, self.cache_path)
@@ -1057,6 +1064,7 @@ def search_youtube_playlist_ids_by_keywords(keywords, max_playlists, candidate_m
 
 def cleanup_youtube_video_title(raw_title):
     cleaned_title = html.unescape(raw_title or "")
+    cleaned_title = cleaned_title.replace("\\", "")
     cleaned_title = re.sub(r"\s+", " ", cleaned_title).strip()
     cleanup_patterns = [
         r"\((official|lyrics?|lyric video|audio|music video|video|visualizer|hd|4k|remaster(?:ed)?|live)[^)]*\)",
@@ -1067,8 +1075,71 @@ def cleanup_youtube_video_title(raw_title):
     return re.sub(r"\s+", " ", cleaned_title).strip(" -|")
 
 
+def score_youtube_song_likelihood(raw_title, cleaned_title):
+    lowered_raw = (raw_title or "").lower()
+    lowered_cleaned = (cleaned_title or "").lower()
+    score = 0
+
+    if any(separator in cleaned_title for separator in [" - ", " – ", " — ", ": "]):
+        score += 5
+
+    likely_song_markers = [
+        "official video",
+        "official audio",
+        "lyrics",
+        "lyric video",
+        "visualizer",
+        "topic",
+        "audio",
+    ]
+    if any(marker in lowered_raw for marker in likely_song_markers):
+        score += 2
+
+    blocked_markers = [
+        "podcast",
+        "episode",
+        "interview",
+        "reaction",
+        "review",
+        "sermon",
+        "homily",
+        "lecture",
+        "audiobook",
+        "trailer",
+        "recap",
+        "vlog",
+        "livestream",
+        "live stream",
+        "tutorial",
+        "lesson",
+        "explained",
+        "news",
+        "documentary",
+        "full movie",
+        "movie clip",
+    ]
+    for marker in blocked_markers:
+        if marker in lowered_raw or marker in lowered_cleaned:
+            score -= 6
+
+    if re.search(r"\b(part|chapter|ep)\b", lowered_cleaned):
+        score -= 4
+
+    if cleaned_title.count(" - ") > 1 or cleaned_title.count(": ") > 1:
+        score -= 2
+
+    word_count = len(cleaned_title.split())
+    if word_count <= 8:
+        score += 1
+    elif word_count >= 14:
+        score -= 2
+
+    return score
+
+
 def convert_youtube_video_title_to_song(raw_title):
     cleaned_title = cleanup_youtube_video_title(raw_title)
+    song_score = score_youtube_song_likelihood(raw_title, cleaned_title)
     separators = [" - ", " – ", " — ", ": "]
     for separator in separators:
         if separator in cleaned_title:
@@ -1079,12 +1150,31 @@ def convert_youtube_video_title_to_song(raw_title):
                 return {
                     'title': track_title,
                     'artists': artist_name,
+                    'youtube_song_score': song_score,
                 }
 
     return {
         'title': cleaned_title or 'Unknown Title',
         'artists': 'Unknown Artist',
+        'youtube_song_score': song_score,
     }
+
+
+def is_likely_youtube_song(song):
+    title = song.get('title', '')
+    artists = song.get('artists', '')
+    score = song.get('youtube_song_score', 0)
+
+    if not title or title == 'Unknown Title':
+        return False
+
+    if artists == 'Unknown Artist':
+        return score >= 4 and len(title.split()) <= 8
+
+    if len(title.split()) > 12:
+        return score >= 6
+
+    return score >= 2
 
 
 def fetch_songs_from_youtube_public_playlists(playlist_ids, max_playlists, max_tracks_per_playlist, max_playlist_size=None):
@@ -1124,32 +1214,46 @@ def fetch_songs_from_youtube_public_playlists(playlist_ids, max_playlists, max_t
             continue
 
         playlist_song_count = 0
+        skipped_non_song_count = 0
         for raw_title in unique_titles:
             if playlist_song_count >= max_tracks_per_playlist:
                 break
 
             song = convert_youtube_video_title_to_song(raw_title)
-            if song['artists'] == 'Unknown Artist' and len(song['title']) > 100:
+            if not is_likely_youtube_song(song):
+                skipped_non_song_count += 1
                 continue
 
             song_list.append(song)
             playlist_song_count += 1
 
         if playlist_song_count:
-            print(f"Recovered {playlist_song_count} song candidate(s) from YouTube playlist '{playlist_id}'.")
+            print(
+                f"Recovered {playlist_song_count} likely song candidate(s) from YouTube playlist '{playlist_id}'"
+                f" and skipped {skipped_non_song_count} likely non-song video(s)."
+            )
             playlists_used += 1
 
     return song_list
 
 
-def search_tracks_by_keywords(keywords, max_songs, label="Searching Spotify tracks directly..."):
-    print(label)
+def merge_song_list_with_seen(song_list, seen_song_keys, song):
+    song_key = normalize_song_key(song.get('title', ''), song.get('artists', ''))
+    if song_key in seen_song_keys:
+        return False
+
+    seen_song_keys.add(song_key)
+    song_list.append(song)
+    return True
+
+
+def search_spotify_tracks_by_keywords(keywords, max_songs):
     song_list = []
     seen_song_keys = set()
     keyword_combinations = build_keyword_combinations(keywords)
 
     for keyword_combo in keyword_combinations:
-        print(f"Searching tracks with: {keyword_combo}")
+        print(f"Searching Spotify tracks with: {keyword_combo}")
         try:
             results = sp.search(q=keyword_combo, type='track', limit=min(max_songs, 10))
         except spotipy.exceptions.SpotifyException as error:
@@ -1164,12 +1268,7 @@ def search_tracks_by_keywords(keywords, max_songs, label="Searching Spotify trac
             track_name = track.get('name') or 'Unknown Title'
             artist_names = [artist.get('name', 'Unknown Artist') for artist in track.get('artists', [])]
             artists = ', '.join(artist_names)
-            song_key = (track_name, artists)
-            if song_key in seen_song_keys:
-                continue
-
-            seen_song_keys.add(song_key)
-            song_list.append({
+            merge_song_list_with_seen(song_list, seen_song_keys, {
                 'title': track_name,
                 'artists': artists,
                 'spotify_url': track.get('external_urls', {}).get('spotify'),
@@ -1182,13 +1281,68 @@ def search_tracks_by_keywords(keywords, max_songs, label="Searching Spotify trac
     return song_list
 
 
+def search_youtube_videos_by_keywords(keywords, max_songs):
+    song_list = []
+    seen_song_keys = set()
+    keyword_combinations = build_keyword_combinations(keywords)
+    video_pattern = re.compile(r'"videoRenderer":\{.*?"videoId":"([^"]+)".*?"title":\{"runs":\[\{"text":"([^"]+)"', re.DOTALL)
+
+    for keyword_combo in keyword_combinations:
+        print(f"Searching YouTube videos with: {keyword_combo}")
+        search_url = "https://www.youtube.com/results?search_query=" + urllib.parse.quote_plus(keyword_combo)
+
+        try:
+            html_text = fetch_text(search_url)
+        except Exception as error:
+            print(f"Could not search YouTube videos for '{keyword_combo}': {error}")
+            continue
+
+        video_count = 0
+        skipped_non_song_count = 0
+        for video_id, raw_title in video_pattern.findall(html_text):
+            song = convert_youtube_video_title_to_song(raw_title)
+            if not is_likely_youtube_song(song):
+                skipped_non_song_count += 1
+                continue
+
+            song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
+            song['youtube_found_exact_video'] = True
+            if merge_song_list_with_seen(song_list, seen_song_keys, song):
+                video_count += 1
+
+            if video_count >= YOUTUBE_SEARCH_RESULT_LIMIT or len(song_list) >= max_songs:
+                break
+
+        print(
+            f"Recovered {video_count} likely song candidate(s) from YouTube search for '{keyword_combo}'"
+            f" and skipped {skipped_non_song_count} likely non-song result(s)."
+        )
+
+        if len(song_list) >= max_songs:
+            return song_list
+
+    return song_list
+
+
+def search_tracks_by_keywords(keywords, max_songs, label="Searching Spotify and YouTube tracks directly..."):
+    print(label)
+    song_map = {}
+    spotify_songs = search_spotify_tracks_by_keywords(keywords, max_songs)
+    merge_song_candidates(song_map, spotify_songs, "spotify-track-search")
+    youtube_songs = search_youtube_videos_by_keywords(keywords, max_songs)
+    merge_song_candidates(song_map, youtube_songs, "youtube-track-search")
+    song_list = list(song_map.values())
+    random.shuffle(song_list)
+    return song_list[:max_songs]
+
+
 
 def prompt_for_public_discovery_mode():
     print("Choose how public discovery should work:")
-    print("1. Hybrid: Spotify public playlists + YouTube playlists + Spotify track search")
+    print("1. Hybrid: Spotify public playlists + YouTube playlists + Spotify/YouTube track search")
     print("2. Spotify public playlists only")
     print("3. YouTube playlists only")
-    print("4. Spotify track search only")
+    print("4. Track search only (Spotify + YouTube)")
     discovery_choice = input("Enter 1, 2, 3, or 4 [1]: ").strip() or '1'
 
     mode_map = {
@@ -1209,7 +1363,7 @@ def describe_public_discovery_mode(discovery_mode):
         'hybrid': 'Hybrid public discovery',
         'spotify-playlists-web': 'Spotify public playlists',
         'youtube-playlists-web': 'YouTube playlists',
-        'spotify-track-search': 'Spotify track search',
+        'spotify-track-search': 'Spotify and YouTube track search',
     }.get(discovery_mode, 'Hybrid public discovery')
 
 
@@ -1254,9 +1408,9 @@ def fetch_songs_from_public_playlists_by_keywords(
         direct_track_songs = search_tracks_by_keywords(
             keywords,
             max_songs,
-            label="Searching Spotify tracks directly...",
+            label="Searching Spotify and YouTube tracks directly...",
         )
-        merge_song_candidates(song_map, direct_track_songs, "spotify-track-search")
+        merge_song_candidates(song_map, direct_track_songs, "direct-track-search")
 
     song_list = list(song_map.values())
     random.shuffle(song_list)
@@ -1433,7 +1587,7 @@ def print_project_summary():
     print("- Randomly picks one or more songs from that pool.")
     print("- Can filter your own playlists by name using a preset, simple text, or regex.")
     print("- Can use random-song.com for truly random Spotify track discovery.")
-    print("- Can discover songs from public Spotify playlist pages, YouTube playlists, and Spotify track search.")
+    print("- Can discover songs from public Spotify playlist pages, YouTube playlists, and direct Spotify/YouTube track search.")
     print("- Can look up selected songs on Spotify, YouTube, or both.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
@@ -1465,7 +1619,7 @@ def main():
     print("2. Filter your playlists by name")
     print("3. Your own playlists")
     print("4. Random saved playlists")
-    print("5. Search public playlists by keywords/phrases")
+    print("5. Search public music sources by keywords/phrases")
     print("6. Surprise me")
     source_choice = input("Enter the number of your choice (1, 2, 3, 4, 5, or 6): ").strip()
 

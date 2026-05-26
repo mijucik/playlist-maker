@@ -7,7 +7,7 @@ This project is a small command-line script that talks to Spotify and helps you:
 - filter your own playlists by name using either plain text or a custom regex
 - pick from all of your saved playlists
 - pick from a random mix of your playlists
-- discover songs from public Spotify playlists, YouTube playlists, and Spotify track search by keywords or phrases
+- discover songs from public Spotify playlists, YouTube playlists, and direct Spotify/YouTube track search by keywords or phrases
 - use a "Surprise me" mode driven by the local `emotions_genres.txt` list
 - use `random-song.com` as an additional true-random song source inside `Surprise me`
 - optionally look up selected songs on Spotify, YouTube, or both, and open the links
@@ -150,7 +150,7 @@ Useful flows inside the app:
 
 - `2` lets you filter your own playlists by `Rediscover`, `contains`, or `regex`
 - `5` searches public music sources by your keywords
-- in that flow, you can choose `hybrid`, `Spotify public playlists`, `YouTube playlists`, or `Spotify track search`
+- in that flow, you can choose `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
 - `6` now has multiple surprise modes:
 - random emotions/genres searched through the same public discovery system
 - `random-song.com` with its own default random setup (`all decades`, `random genre`, `random market`)
@@ -163,4 +163,5 @@ Useful flows inside the app:
 - `main.py` is the best entrypoint to use.
 - For most people, playlist-name `contains` matching is simpler than regex. Regex is available when you want more control.
 - The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
+- Generated output files and cache files are now ignored by git, so each machine can create its own local data without shipping personal artifacts in the repo.
 - The old root-level `.cache` file was Spotipy's token cache format.
