@@ -9,6 +9,7 @@ This project is a small command-line script that talks to Spotify and helps you:
 - pick from a random mix of your playlists
 - search public Spotify playlists by keywords or phrases
 - use a "Surprise me" mode driven by the local `emotions_genres.txt` list
+- use `random-song.com` as an additional true-random song source inside `Surprise me`
 - optionally look up selected songs on Spotify, YouTube, or both, and open the links
 - optionally export the results to `.txt` or `.html`
 - optionally create a new private Spotify playlist from the selected songs
@@ -148,7 +149,10 @@ Useful flows inside the app:
 
 - `2` lets you filter your own playlists by `Rediscover`, `contains`, or `regex`
 - `5` searches public playlists by your keywords
-- `6` uses random emotions/genres from `emotions_genres.txt`
+- `6` now has multiple surprise modes:
+- random emotions/genres searched through public playlists
+- `random-song.com` with completely random configurations
+- `random-song.com` with your own custom genre/market/decade settings
 - after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or `both`
 - when using public playlists, you can set a maximum playlist size to avoid huge playlists
 

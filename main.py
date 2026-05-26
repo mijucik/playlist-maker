@@ -25,6 +25,7 @@ APP_DIR = Path.home() / f".{APP_NAME}"
 TOKEN_CACHE_PATH = APP_DIR / "token_cache.json"
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 SCOPE = "user-read-private playlist-read-private playlist-modify-private playlist-modify-public"
+RANDOM_SONG_API_BASE_URL = "https://europe-west1-randommusicgenerator-34646.cloudfunctions.net/appV2"
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -97,25 +98,39 @@ def create_spotify_client():
         print("Error: Spotify client ID and client secret are required.")
         sys.exit(1)
 
-    auth_manager = SpotifyOAuth(
-        client_id=client_id,
-        client_secret=client_secret,
-        redirect_uri=redirect_uri,
-        scope=SCOPE,
-        open_browser=True,
-        cache_handler=SecureTokenCacheHandler(TOKEN_CACHE_PATH),
-    )
+    cache_handler = SecureTokenCacheHandler(TOKEN_CACHE_PATH)
 
-    spotify_client = spotipy.Spotify(auth_manager=auth_manager)
+    def build_client():
+        auth_manager = SpotifyOAuth(
+            client_id=client_id,
+            client_secret=client_secret,
+            redirect_uri=redirect_uri,
+            scope=SCOPE,
+            open_browser=True,
+            cache_handler=cache_handler,
+        )
+        return spotipy.Spotify(auth_manager=auth_manager)
+
+    spotify_client = build_client()
 
     try:
         user = spotify_client.current_user()
-        display_name = user.get("display_name") or user.get("id") or "unknown user"
-        print(f"Successfully authenticated as {display_name}")
+    except spotipy.exceptions.SpotifyOauthError as error:
+        print(f"Cached Spotify token could not be refreshed: {error}")
+        print("Clearing the local token cache and retrying authentication...")
+        cache_handler.delete_cache()
+        spotify_client = build_client()
+        try:
+            user = spotify_client.current_user()
+        except (spotipy.exceptions.SpotifyException, spotipy.exceptions.SpotifyOauthError) as retry_error:
+            print(f"Authentication failed after clearing the cache: {retry_error}")
+            sys.exit(1)
     except spotipy.exceptions.SpotifyException as error:
         print(f"Authentication failed: {error}")
         sys.exit(1)
 
+    display_name = user.get("display_name") or user.get("id") or "unknown user"
+    print(f"Successfully authenticated as {display_name}")
     return spotify_client
 
 
@@ -462,6 +477,156 @@ def parse_keywords(input_string):
     # Flatten results and strip extra whitespace
     keywords = [kw[0] or kw[1] for kw in matches]  # Each match is a tuple; pick the non-empty group
     return [kw.strip() for kw in keywords]
+
+
+def fetch_json(url):
+    request = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": "Mozilla/5.0",
+            "Accept": "application/json",
+        },
+    )
+    with urllib.request.urlopen(request, timeout=20) as response:
+        return json.load(response)
+
+
+def random_song_api_get(path, params=None):
+    query = urllib.parse.urlencode(params or {})
+    url = f"{RANDOM_SONG_API_BASE_URL}{path}"
+    if query:
+        url = f"{url}?{query}"
+    return fetch_json(url)
+
+
+def fetch_random_song_generator_options():
+    markets_response = random_song_api_get("/getMarkets")
+    genres_response = random_song_api_get("/getGenres")
+    decades_response = random_song_api_get("/getDecades")
+    return {
+        "markets": markets_response.get("data", []),
+        "genres": genres_response.get("data", []),
+        "decades": decades_response.get("data", []),
+    }
+
+
+def prompt_for_random_song_generator_config(options):
+    print("Random-song.com configuration:")
+    print("Press Enter to keep an option random.")
+
+    available_genres = [genre.get("name") for genre in options["genres"] if genre.get("name")]
+    available_markets = [market.get("name") for market in options["markets"] if market.get("name")]
+    available_decades = [decade.get("name") for decade in options["decades"] if decade.get("name")]
+
+    genre = input("Genre (example: ambient, rock, jazz) [random]: ").strip() or "random"
+    market = input("Market/country name (example: Germany, Japan) [random]: ").strip() or "random"
+    decade = input("Decade (example: 1990s, 2000s) [random]: ").strip() or "random"
+
+    if genre != "random" and genre not in available_genres and genre != "none":
+        print("That genre is not in random-song.com's published list.")
+        return None
+    if market != "random" and market not in available_markets:
+        print("That market is not in random-song.com's published list.")
+        return None
+    if decade != "random" and decade != "all" and decade not in available_decades:
+        print("That decade is not in random-song.com's published list.")
+        return None
+
+    tag_new = input("New releases only? (yes/no) [no]: ").strip().lower() == "yes"
+    exclude_singles = input("Exclude singles? (yes/no) [no]: ").strip().lower() == "yes"
+
+    return {
+        "market": market,
+        "genre": genre,
+        "decade": decade,
+        "tag_new": tag_new,
+        "exclude_singles": exclude_singles,
+    }
+
+
+def build_random_song_generator_random_config(options):
+    market_choices = ["random"] + [market.get("name") for market in options["markets"] if market.get("name")]
+    genre_choices = ["random", "none"] + [genre.get("name") for genre in options["genres"] if genre.get("name")]
+    decade_choices = ["random", "all"] + [decade.get("name") for decade in options["decades"] if decade.get("name")]
+    return {
+        "market": random.choice(market_choices),
+        "genre": random.choice(genre_choices),
+        "decade": random.choice(decade_choices),
+        "tag_new": random.choice([True, False]),
+        "exclude_singles": random.choice([True, False]),
+    }
+
+
+def fetch_random_song_generator_track(config, retries=8):
+    last_response = None
+    for _ in range(retries):
+        params = {
+            "market": config["market"],
+            "genre": config["genre"],
+            "decade": config["decade"],
+            "tag_new": str(config["tag_new"]).lower(),
+            "exclude_singles": str(config["exclude_singles"]).lower(),
+        }
+
+        try:
+            response = random_song_api_get("/getRandomTrack", params)
+        except Exception as error:
+            last_response = {"status": 503, "message": str(error)}
+            continue
+
+        last_response = response
+        if response.get("status") == 200:
+            track = response.get("data", {}).get("track")
+            if track:
+                return track, response.get("meta_data", {})
+
+    return None, last_response
+
+
+def convert_random_song_generator_track(track, meta_data=None):
+    artists = ", ".join(artist.get("name", "Unknown Artist") for artist in track.get("artists", []))
+    song = {
+        "title": track.get("name") or "Unknown Title",
+        "artists": artists or "Unknown Artist",
+        "spotify_url": track.get("link"),
+        "spotify_found_exact_track": bool(track.get("link")),
+        "source": "random-song.com",
+    }
+    if meta_data:
+        song["random_song_meta"] = meta_data
+    return song
+
+
+def fetch_songs_from_random_song_generator(num_songs, mode, config=None):
+    print("Fetching songs from random-song.com...")
+    options = fetch_random_song_generator_options()
+    song_list = []
+    seen_song_keys = set()
+    max_total_attempts = max(num_songs * 6, 10)
+    total_attempts = 0
+
+    with tqdm(total=num_songs, desc='Getting random-song.com tracks', unit='song') as progress_bar:
+        while len(song_list) < num_songs and total_attempts < max_total_attempts:
+            total_attempts += 1
+            active_config = build_random_song_generator_random_config(options) if mode == "random-configs" else config
+            track, meta_data = fetch_random_song_generator_track(active_config)
+            if not track:
+                print(f"random-song.com did not return a track for config: {active_config}")
+                continue
+
+            song = convert_random_song_generator_track(track, meta_data)
+            song_key = (song["title"], song["artists"])
+            if song_key in seen_song_keys:
+                continue
+
+            seen_song_keys.add(song_key)
+            song_list.append(song)
+            progress_bar.update(1)
+
+    if len(song_list) < num_songs:
+        print(f"random-song.com returned {len(song_list)} unique song(s) after {total_attempts} attempt(s).")
+
+    return song_list
 
 
 def build_youtube_search_url(song):
@@ -880,6 +1045,7 @@ def print_project_summary():
     print("- Pulls songs from your Spotify playlists or from public playlists.")
     print("- Randomly picks one or more songs from that pool.")
     print("- Can filter your own playlists by name using a preset, simple text, or regex.")
+    print("- Can use random-song.com for truly random Spotify track discovery.")
     print("- Can look up selected songs on Spotify, YouTube, or both.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
@@ -920,6 +1086,8 @@ def main():
     max_tracks_per_playlist = None
     max_songs = None
     max_playlist_size = None
+    keywords = None
+    surprise_song_list = None
 
     if source_choice == '1':
         cache_file = 'song_cache_all.json'
@@ -941,42 +1109,76 @@ def main():
         fetch_and_cache_songs = lambda cache_file: fetch_and_cache_random_playlists_songs(cache_file, num_songs)
         source_description = 'Random Playlists'
     elif source_choice == '5' or source_choice == '6':
-        # Only prompt for max playlists when option 5 or 6 is selected
-        while True:
-            try:
-                max_playlists = int(input("Enter the maximum number of playlists to search: ").strip())
-                if max_playlists > 0:
-                    break
-                else:
-                    print("Please enter a positive number.")
-            except ValueError:
-                print("Invalid input. Please enter a positive number.")
-
-        max_playlist_size = prompt_for_optional_positive_number(
-            "Only use public playlists with at most how many songs? (Press Enter for no limit): "
-        )
-        max_songs = 20 * max_playlists  # You can keep this logic to calculate the total max songs
-        max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
-
         if source_choice == '5':
+            while True:
+                try:
+                    max_playlists = int(input("Enter the maximum number of playlists to search: ").strip())
+                    if max_playlists > 0:
+                        break
+                    else:
+                        print("Please enter a positive number.")
+                except ValueError:
+                    print("Invalid input. Please enter a positive number.")
+
+            max_playlist_size = prompt_for_optional_positive_number(
+                "Only use public playlists with at most how many songs? (Press Enter for no limit): "
+            )
+            max_songs = 20 * max_playlists
+            max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
+
             # For option 5, we won't use cache
             cache_file = None
             source_description = 'Public Playlists by Keywords/Phrases'
             keywords_input = input("Enter one or more keywords/phrases (separate by commas or enclose phrases in quotes): ").strip()
             keywords = parse_keywords(keywords_input)
         elif source_choice == '6':
-            # For the 'Surprise Me' option, generate random emotions/genres
-            print("Surprise Me option selected...")
-            random_keywords = random.sample(EMOTIONS_GENRES, 3)  # Select 3 random emotions/genres
-            print(f"Randomly selected emotions/genres: {', '.join(random_keywords)}")
-            keywords = random_keywords
             cache_file = None
-            source_description = 'Surprise Me (Random Emotions/Genres)'
+            print("Choose your Surprise Me mode:")
+            print("1. Random emotions/genres searched through public playlists")
+            print("2. random-song.com with completely random configurations")
+            print("3. random-song.com with custom configuration")
+            surprise_mode = input("Enter 1, 2, or 3: ").strip()
+
+            if surprise_mode == '1':
+                while True:
+                    try:
+                        max_playlists = int(input("Enter the maximum number of playlists to search: ").strip())
+                        if max_playlists > 0:
+                            break
+                        else:
+                            print("Please enter a positive number.")
+                    except ValueError:
+                        print("Invalid input. Please enter a positive number.")
+
+                max_playlist_size = prompt_for_optional_positive_number(
+                    "Only use public playlists with at most how many songs? (Press Enter for no limit): "
+                )
+                max_songs = 20 * max_playlists
+                max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
+
+                print("Surprise Me option selected...")
+                random_keywords = random.sample(EMOTIONS_GENRES, 3)
+                print(f"Randomly selected emotions/genres: {', '.join(random_keywords)}")
+                keywords = random_keywords
+                source_description = 'Surprise Me (Random Emotions/Genres)'
+            elif surprise_mode == '2':
+                source_description = 'Surprise Me (random-song.com Random Configs)'
+                surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="random-configs")
+            elif surprise_mode == '3':
+                options = fetch_random_song_generator_options()
+                custom_config = prompt_for_random_song_generator_config(options)
+                if not custom_config:
+                    return
+                source_description = 'Surprise Me (random-song.com Custom Config)'
+                surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="custom-config", config=custom_config)
+            else:
+                print("Invalid choice. Please run the script again and select a valid option.")
+                return
     else:
         print("Invalid choice. Please run the script again and select a valid option.")
         return
 
-    if source_choice == '5' or source_choice == '6':
+    if source_choice == '5' or (source_choice == '6' and keywords is not None):
         # Handle option 5 and 6 without caching
         song_list = fetch_songs_from_public_playlists_by_keywords(
             keywords,
@@ -989,6 +1191,12 @@ def main():
             print("No tracks found.")
             return
         selected_songs = random.sample(song_list, min(num_songs, len(song_list)))
+        selected_playlists = []
+    elif source_choice == '6' and surprise_song_list is not None:
+        if not surprise_song_list:
+            print("No tracks found.")
+            return
+        selected_songs = random.sample(surprise_song_list, min(num_songs, len(surprise_song_list)))
         selected_playlists = []
     else:
         print(f"Selected source: {source_description}")
