@@ -287,7 +287,7 @@ def render_page(form, status="", output=""):
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spotify Playlist Picker</title>
+  <title>Spotify Playlist Picker Web</title>
   <style>
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -345,6 +345,18 @@ def render_page(form, status="", output=""):
       color: #234a31;
       font-weight: 600;
     }}
+    .hidden {{
+      display: none;
+    }}
+    .section-title {{
+      margin-top: 18px;
+      margin-bottom: 10px;
+    }}
+    .section-copy {{
+      color: #536257;
+      margin-top: 0;
+      margin-bottom: 14px;
+    }}
     pre {{
       white-space: pre-wrap;
       background: #101512;
@@ -367,10 +379,10 @@ def render_page(form, status="", output=""):
 </head>
 <body>
   <div class="page">
-    <h1>Spotify Playlist Picker Easy App</h1>
-    <p class="hint">Enter your Spotify app settings once, pick the options you want, and run the tool without stepping through the raw CLI prompts.</p>
+    <h1>Spotify Playlist Picker Web</h1>
+    <p class="hint">Enter your Spotify app settings once, then follow the same decision flow as the terminal app without seeing unrelated options.</p>
 
-    <form method="post" action="/save" class="card">
+    <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
       <div class="grid">
         <label for="client_id">Client ID</label>
@@ -388,11 +400,11 @@ def render_page(form, status="", output=""):
       </div>
     </form>
 
-    <form method="post" action="/run" class="card">
+    <form method="post" action="/run" class="card" id="run-form">
       <h2>Run Options</h2>
-      <input type="hidden" name="client_id" value="{escape(form['client_id'])}">
-      <input type="hidden" name="client_secret" value="{escape(form['client_secret'])}">
-      <input type="hidden" name="redirect_uri" value="{escape(form['redirect_uri'])}">
+      <input type="hidden" id="run-client-id" name="client_id" value="{escape(form['client_id'])}">
+      <input type="hidden" id="run-client-secret" name="client_secret" value="{escape(form['client_secret'])}">
+      <input type="hidden" id="run-redirect-uri" name="redirect_uri" value="{escape(form['redirect_uri'])}">
 
       <div class="grid">
         <label for="num_songs">Number of songs</label>
@@ -407,7 +419,12 @@ def render_page(form, status="", output=""):
           <option{option(form['source'], 'Public discovery')}>Public discovery</option>
           <option{option(form['source'], 'Surprise me')}>Surprise me</option>
         </select>
+      </div>
 
+      <div id="visibility-section">
+      <h3 class="section-title">Playlist Visibility</h3>
+      <p class="section-copy">Use this when you want to limit personal playlist sources to public playlists, private playlists, or either.</p>
+      <div class="grid">
         <label for="visibility">Playlist visibility</label>
         <select id="visibility" name="visibility">
           <option{option(form['visibility'], 'Any visibility')}>Any visibility</option>
@@ -415,8 +432,11 @@ def render_page(form, status="", output=""):
           <option{option(form['visibility'], 'Private only')}>Private only</option>
         </select>
       </div>
+      </div>
 
-      <h3>Playlist Name Filter</h3>
+      <div id="playlist-filter-section">
+      <h3 class="section-title">Playlist Name Filter</h3>
+      <p class="section-copy">This only appears when you choose to filter your own playlists by name.</p>
       <div class="grid">
         <label for="filter_mode">Filter mode</label>
         <select id="filter_mode" name="filter_mode">
@@ -425,11 +445,27 @@ def render_page(form, status="", output=""):
           <option{option(form['filter_mode'], 'Custom regex')}>Custom regex</option>
         </select>
 
-        <label for="filter_value">Filter text or regex</label>
+        <label for="filter_value" id="filter-value-label">Filter text or regex</label>
         <input id="filter_value" name="filter_value" value="{escape(form['filter_value'])}">
       </div>
+      </div>
 
-      <h3>Public Discovery</h3>
+      <div id="surprise-section">
+      <h3 class="section-title">Surprise Me</h3>
+      <p class="section-copy">Choose whether Surprise Me uses public discovery or random-song.com.</p>
+      <div class="grid">
+        <label for="surprise_mode">Mode</label>
+        <select id="surprise_mode" name="surprise_mode">
+          <option{option(form['surprise_mode'], 'Random emotions/genres via public discovery')}>Random emotions/genres via public discovery</option>
+          <option{option(form['surprise_mode'], 'random-song.com default')}>random-song.com default</option>
+          <option{option(form['surprise_mode'], 'random-song.com custom')}>random-song.com custom</option>
+        </select>
+      </div>
+      </div>
+
+      <div id="public-discovery-options-section">
+      <h3 class="section-title">Public Discovery Settings</h3>
+      <p class="section-copy">These settings control how many public playlists are considered and what size range they must fall into.</p>
       <div class="grid">
         <label for="max_playlists">Max playlists</label>
         <input id="max_playlists" name="max_playlists" value="{escape(form['max_playlists'])}">
@@ -447,20 +483,22 @@ def render_page(form, status="", output=""):
           <option{option(form['discovery_mode'], 'YouTube playlists')}>YouTube playlists</option>
           <option{option(form['discovery_mode'], 'Track search only')}>Track search only</option>
         </select>
+      </div>
+      </div>
 
+      <div id="public-keywords-section">
+      <h3 class="section-title">Public Discovery Keywords</h3>
+      <p class="section-copy">Enter one or more words or phrases, like <code>happy</code>, <code>yacht rock</code>, or <code>"summer jazz"</code>.</p>
+      <div class="grid">
         <label for="keywords">Keywords</label>
         <input id="keywords" name="keywords" value="{escape(form['keywords'])}">
       </div>
+      </div>
 
-      <h3>Surprise Me</h3>
+      <div id="random-song-custom-section">
+      <h3 class="section-title">random-song.com Custom Options</h3>
+      <p class="section-copy">Leave values as <code>random</code> when you want random-song.com to choose for you.</p>
       <div class="grid">
-        <label for="surprise_mode">Mode</label>
-        <select id="surprise_mode" name="surprise_mode">
-          <option{option(form['surprise_mode'], 'Random emotions/genres via public discovery')}>Random emotions/genres via public discovery</option>
-          <option{option(form['surprise_mode'], 'random-song.com default')}>random-song.com default</option>
-          <option{option(form['surprise_mode'], 'random-song.com custom')}>random-song.com custom</option>
-        </select>
-
         <label for="random_genre">Custom genre</label>
         <input id="random_genre" name="random_genre" value="{escape(form['random_genre'])}">
 
@@ -469,7 +507,18 @@ def render_page(form, status="", output=""):
 
         <label for="random_decade">Custom decade</label>
         <input id="random_decade" name="random_decade" value="{escape(form['random_decade'])}">
+      </div>
 
+      <div class="row" style="margin-top: 12px;">
+        <label><input type="checkbox" name="random_new"{checked('random_new')}> New releases only</label>
+        <label><input type="checkbox" name="random_exclude_singles"{checked('random_exclude_singles')}> Exclude singles</label>
+      </div>
+      </div>
+
+      <div id="link-section">
+      <h3 class="section-title">Link Lookup</h3>
+      <p class="section-copy">Choose whether the resulting songs should include Spotify links, YouTube links, both, or no links.</p>
+      <div class="grid">
         <label for="link_choice">Link lookup</label>
         <select id="link_choice" name="link_choice">
           <option{option(form['link_choice'], 'No links')}>No links</option>
@@ -478,14 +527,10 @@ def render_page(form, status="", output=""):
           <option{option(form['link_choice'], 'Both Spotify and YouTube')}>Both Spotify and YouTube</option>
         </select>
       </div>
-
-      <div class="row" style="margin-top: 12px;">
-        <label><input type="checkbox" name="random_new"{checked('random_new')}> New releases only</label>
-        <label><input type="checkbox" name="random_exclude_singles"{checked('random_exclude_singles')}> Exclude singles</label>
       </div>
 
       <div class="row" style="margin-top: 16px;">
-        <button type="submit">Run Easy App</button>
+        <button type="submit">Run Picker</button>
       </div>
     </form>
 
@@ -494,11 +539,70 @@ def render_page(form, status="", output=""):
       <pre>{escape(output)}</pre>
     </div>
   </div>
+  <script>
+    const settingsClientId = document.getElementById("client_id");
+    const settingsClientSecret = document.getElementById("client_secret");
+    const settingsRedirectUri = document.getElementById("redirect_uri");
+    const runClientId = document.getElementById("run-client-id");
+    const runClientSecret = document.getElementById("run-client-secret");
+    const runRedirectUri = document.getElementById("run-redirect-uri");
+    const sourceSelect = document.getElementById("source");
+    const visibilitySelect = document.getElementById("visibility");
+    const filterModeSelect = document.getElementById("filter_mode");
+    const surpriseModeSelect = document.getElementById("surprise_mode");
+    const visibilitySection = document.getElementById("visibility-section");
+    const playlistFilterSection = document.getElementById("playlist-filter-section");
+    const publicDiscoveryOptionsSection = document.getElementById("public-discovery-options-section");
+    const publicKeywordsSection = document.getElementById("public-keywords-section");
+    const surpriseSection = document.getElementById("surprise-section");
+    const randomSongCustomSection = document.getElementById("random-song-custom-section");
+    const filterValueInput = document.getElementById("filter_value");
+    const filterValueLabel = document.getElementById("filter-value-label");
+
+    function setHidden(element, shouldHide) {{
+      element.classList.toggle("hidden", shouldHide);
+    }}
+
+    function updateFlow() {{
+      const source = sourceSelect.value;
+      const filterMode = filterModeSelect.value;
+      const surpriseMode = surpriseModeSelect.value;
+
+      const usesVisibility = ["All playlists", "Filter your playlists by name", "Your own playlists", "Random saved playlists"].includes(source);
+      setHidden(visibilitySection, !usesVisibility);
+      visibilitySelect.disabled = !usesVisibility;
+
+      setHidden(playlistFilterSection, source !== "Filter your playlists by name");
+      setHidden(publicDiscoveryOptionsSection, !(source === "Public discovery" || (source === "Surprise me" && surpriseMode === "Random emotions/genres via public discovery")));
+      setHidden(publicKeywordsSection, source !== "Public discovery");
+      setHidden(surpriseSection, source !== "Surprise me");
+      setHidden(randomSongCustomSection, !(source === "Surprise me" && surpriseMode === "random-song.com custom"));
+
+      const needsFilterValue = filterMode !== "Rediscover preset";
+      filterValueInput.disabled = !needsFilterValue;
+      filterValueLabel.textContent = filterMode === "Custom regex" ? "Regex" : "Filter text";
+    }}
+
+    function syncSettingsIntoRunForm() {{
+      runClientId.value = settingsClientId.value;
+      runClientSecret.value = settingsClientSecret.value;
+      runRedirectUri.value = settingsRedirectUri.value;
+    }}
+
+    settingsClientId.addEventListener("input", syncSettingsIntoRunForm);
+    settingsClientSecret.addEventListener("input", syncSettingsIntoRunForm);
+    settingsRedirectUri.addEventListener("input", syncSettingsIntoRunForm);
+    sourceSelect.addEventListener("change", updateFlow);
+    filterModeSelect.addEventListener("change", updateFlow);
+    surpriseModeSelect.addEventListener("change", updateFlow);
+    syncSettingsIntoRunForm();
+    updateFlow();
+  </script>
 </body>
 </html>"""
 
 
-class EasyAppHandler(BaseHTTPRequestHandler):
+class WebHandler(BaseHTTPRequestHandler):
     def _send_html(self, html_body, status_code=200):
         encoded = html_body.encode("utf-8")
         self.send_response(status_code)
@@ -551,7 +655,7 @@ def start_server():
     port = DEFAULT_PORT
     while True:
         try:
-            server = ThreadingHTTPServer(("127.0.0.1", port), EasyAppHandler)
+            server = ThreadingHTTPServer(("127.0.0.1", port), WebHandler)
             return server, port
         except OSError:
             port += 1
@@ -560,7 +664,7 @@ def start_server():
 if __name__ == "__main__":
     server, port = start_server()
     url = f"http://127.0.0.1:{port}"
-    print(f"Spotify Playlist Picker Easy App running at {url}")
+    print(f"Spotify Playlist Picker Web running at {url}")
     print("Press Ctrl+C to stop.")
     webbrowser.open(url)
     try:

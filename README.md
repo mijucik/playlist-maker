@@ -97,23 +97,24 @@ On Windows PowerShell:
 python -m pip install -r requirements.txt
 ```
 
-### 3a. Use the easy app if you want a simpler launcher
+### 3a. Use the web app if you want a simpler launcher
 
 If you want a simpler browser-based launcher instead of the raw CLI, run:
 
 ```bash
-python3 easy_app.py
+python3 web.py
 ```
 
 On Windows PowerShell:
 
 ```powershell
-python easy_app.py
+python web.py
 ```
 
-The easy app lets people:
+The web app lets people:
 
 - enter Spotify app credentials once and save them locally
+- move through the same decision flow as the terminal app without seeing every option at once
 - choose common playlist/search options from dropdowns
 - run the picker without manually stepping through every CLI prompt
 - open the local launcher in a browser automatically
@@ -168,7 +169,7 @@ python main.py
 
 You can also use [.env.example](/Users/kevintang/Downloads/spotify-scripts-main/.env.example:1) as a reference, but this project does not auto-load `.env` files.
 
-If you save credentials through `easy_app.py`, the CLI will reuse those saved app settings automatically on future runs.
+If you save credentials through `web.py`, the CLI will reuse those saved app settings automatically on future runs.
 
 ### 6. Authorize the app in your browser
 
