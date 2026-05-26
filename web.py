@@ -2,11 +2,15 @@
 
 import html
 import json
+import mimetypes
 import os
+import re
 import subprocess
 import sys
 import tempfile
+import threading
 import urllib.parse
+import uuid
 import webbrowser
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -18,6 +22,42 @@ CONFIG_PATH = APP_DIR / "config.json"
 DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 REPO_DIR = Path(__file__).resolve().parent
 DEFAULT_PORT = 8765
+SESSIONS = {}
+SESSIONS_LOCK = threading.Lock()
+
+AUTO_RESPONSE_PROMPTS = {
+    "Do you want to open the file now? (yes/no): ": "no",
+    "Do you want to open Spotify link(s) now? (yes/no): ": "no",
+    "Do you want to open YouTube link(s) now? (yes/no): ": "no",
+    "Do you want to open Spotify/YouTube link(s) now? (yes/no): ": "no",
+    "Which platform should be opened first? (Enter 'spotify' or 'youtube'): ": "spotify",
+    "Open all song links? (yes/no): ": "no",
+}
+
+INTERACTIVE_PROMPTS = {
+    "Do you want to check for updates? (yes/no): ": {
+        "id": "check_updates",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
+    "Do you want to create a Spotify playlist with these songs? (yes/no): ": {
+        "id": "create_playlist",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
+    "Enter a name for your new playlist: ": {
+        "id": "playlist_name",
+        "type": "text",
+        "choices": [],
+        "placeholder": "Playlist name",
+    },
+}
+
+PROMPT_SUFFIXES = list(AUTO_RESPONSE_PROMPTS) + list(INTERACTIVE_PROMPTS)
+SPOTIFY_LINK_RE = re.compile(r"https://open\.spotify\.com/[^\s)'\"]+")
+YOUTUBE_LINK_RE = re.compile(r"https://www\.youtube\.com/[^\s)'\"]+")
 
 
 def ensure_private_directory(path):
@@ -95,6 +135,7 @@ def build_default_form_data():
         "random_new": "",
         "random_exclude_singles": "",
         "link_choice": "No links",
+        "output_format": "terminal",
     }
 
 
@@ -104,7 +145,7 @@ def merge_with_defaults(form_data):
     return defaults
 
 
-def build_cli_answers(form):
+def build_initial_cli_answers(form):
     lines = [form["num_songs"].strip() or "1"]
 
     source_choice = {
@@ -133,9 +174,6 @@ def build_cli_answers(form):
         lines.append(filter_choice)
         if filter_choice in {"2", "3"}:
             lines.append(form["filter_value"].strip())
-
-    if source_choice == "4":
-        lines.append("no")
 
     if source_choice == "5":
         lines.append(form["max_playlists"].strip() or "10")
@@ -185,14 +223,9 @@ def build_cli_answers(form):
     if num_songs_raw != "one":
         try:
             if int(num_songs_raw or "1") > 1:
-                lines.append("terminal")
+                lines.append(form["output_format"])
         except ValueError:
             pass
-
-    lines.append("no")
-
-    if form["link_choice"] != "No links":
-        lines.append("no")
 
     return "\n".join(lines) + "\n"
 
@@ -201,11 +234,10 @@ def validate_form(form):
     if not form["client_id"].strip() or not form["client_secret"].strip():
         return "Client ID and Client Secret are required."
 
+    num_songs_value = form["num_songs"].strip().lower()
     try:
-        num_songs_value = form["num_songs"].strip().lower()
-        if num_songs_value != "one":
-            if int(num_songs_value or "1") < 1:
-                return "Number of songs must be at least 1."
+        if num_songs_value != "one" and int(num_songs_value or "1") < 1:
+            return "Number of songs must be at least 1."
     except ValueError:
         return "Number of songs must be 'one' or a positive integer."
 
@@ -213,16 +245,15 @@ def validate_form(form):
         if not form["filter_value"].strip():
             return "Enter playlist filter text or regex."
 
-    if form["source"] == "Public discovery" and not form["keywords"].strip():
-        return "Enter at least one keyword for public discovery."
+    if form["source"] == "Public discovery":
+        if not form["keywords"].strip():
+            return "Enter at least one keyword for public discovery."
+        if not form["max_playlists"].strip():
+            return "Enter a maximum number of playlists."
 
     if form["source"] == "Surprise me" and form["surprise_mode"] == "Random emotions/genres via public discovery":
         if not form["max_playlists"].strip():
             return "Enter a maximum number of playlists for public surprise mode."
-
-    if form["source"] == "Public discovery":
-        if not form["max_playlists"].strip():
-            return "Enter a maximum number of playlists."
 
     if form["source"] in {"Public discovery", "Surprise me"} and form["max_playlists"].strip():
         try:
@@ -246,6 +277,9 @@ def validate_form(form):
     if min_size is not None and max_size is not None and min_size > max_size:
         return "Minimum playlist size cannot be greater than maximum playlist size."
 
+    if form["output_format"] not in {"terminal", "html", "txt"}:
+        return "Output format must be terminal, html, or txt."
+
     return None
 
 
@@ -259,26 +293,215 @@ def save_credentials_from_form(form):
     save_local_config(config_data)
 
 
-def run_cli_from_form(form):
-    answer_blob = build_cli_answers(form)
-    env = os.environ.copy()
-    env["SPOTIPY_CLIENT_ID"] = form["client_id"].strip()
-    env["SPOTIPY_CLIENT_SECRET"] = form["client_secret"].strip()
-    env["SPOTIPY_REDIRECT_URI"] = form["redirect_uri"].strip() or DEFAULT_REDIRECT_URI
-
-    result = subprocess.run(
-        [sys.executable, "main.py"],
-        cwd=REPO_DIR,
-        env=env,
-        input=answer_blob,
-        text=True,
-        capture_output=True,
-        timeout=600,
-    )
-    return (result.stdout or "") + ("\n" + result.stderr if result.stderr else "")
+def append_unique(items, new_items):
+    seen = set(items)
+    for item in new_items:
+        if item not in seen:
+            items.append(item)
+            seen.add(item)
 
 
-def render_page(form, status="", output=""):
+class InteractiveRunSession:
+    def __init__(self, form):
+        self.id = uuid.uuid4().hex
+        self.form = form
+        self.process = None
+        self.thread = None
+        self.lock = threading.Lock()
+        self.response_event = threading.Event()
+        self.pending_answer = None
+        self.output = ""
+        self.tail = ""
+        self.finished = False
+        self.exit_code = None
+        self.current_prompt = None
+        self.status = "Starting..."
+        self.generated_file = None
+        self.spotify_links = []
+        self.youtube_links = []
+        self.error = None
+
+    def start(self):
+        with self.lock:
+            self.status = "Running..."
+        env = os.environ.copy()
+        env["SPOTIPY_CLIENT_ID"] = self.form["client_id"].strip()
+        env["SPOTIPY_CLIENT_SECRET"] = self.form["client_secret"].strip()
+        env["SPOTIPY_REDIRECT_URI"] = self.form["redirect_uri"].strip() or DEFAULT_REDIRECT_URI
+
+        self.process = subprocess.Popen(
+            [sys.executable, "main.py"],
+            cwd=REPO_DIR,
+            env=env,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=0,
+        )
+
+        initial_answers = build_initial_cli_answers(self.form)
+        self.process.stdin.write(initial_answers)
+        self.process.stdin.flush()
+
+        self.thread = threading.Thread(target=self._read_output_loop, daemon=True)
+        self.thread.start()
+
+    def _read_output_loop(self):
+        try:
+            while True:
+                chunk = self.process.stdout.read(1)
+                if not chunk:
+                    break
+                self._handle_output_chunk(chunk)
+
+            self.process.wait()
+            with self.lock:
+                self.finished = True
+                self.exit_code = self.process.returncode
+                if self.exit_code == 0:
+                    self.status = "Run finished."
+                else:
+                    self.status = f"Run exited with code {self.exit_code}."
+                self.current_prompt = None
+        except Exception as error:
+            with self.lock:
+                self.finished = True
+                self.error = str(error)
+                self.status = f"Run failed: {error}"
+
+    def _handle_output_chunk(self, chunk):
+        pending_prompt = None
+        auto_response = None
+
+        with self.lock:
+            self.output += chunk
+            self.tail = (self.tail + chunk)[-300:]
+            if chunk == "\n":
+                self._parse_recent_output_locked()
+
+            for prompt_text, response in AUTO_RESPONSE_PROMPTS.items():
+                if self.tail.endswith(prompt_text):
+                    auto_response = response
+                    break
+
+            if auto_response is None:
+                for prompt_text, prompt_meta in INTERACTIVE_PROMPTS.items():
+                    if self.tail.endswith(prompt_text):
+                        pending_prompt = {
+                            "prompt_text": prompt_text,
+                            **prompt_meta,
+                        }
+                        self.current_prompt = pending_prompt
+                        self.status = "Waiting for your answer..."
+                        break
+
+        if auto_response is not None:
+            self._write_answer(auto_response)
+            return
+
+        if pending_prompt is not None:
+            self.response_event.clear()
+            self.response_event.wait()
+            with self.lock:
+                answer = self.pending_answer if self.pending_answer is not None else ""
+                self.pending_answer = None
+                self.current_prompt = None
+                self.status = "Running..."
+            self._write_answer(answer)
+
+    def _write_answer(self, answer):
+        if not self.process or not self.process.stdin:
+            return
+
+        try:
+            self.process.stdin.write(answer + "\n")
+            self.process.stdin.flush()
+            with self.lock:
+                self.output += answer + "\n"
+                self.tail = (self.tail + answer + "\n")[-300:]
+                self._parse_recent_output_locked()
+        except Exception:
+            pass
+
+    def respond(self, answer):
+        with self.lock:
+            if not self.current_prompt:
+                return False
+            self.pending_answer = answer
+        self.response_event.set()
+        return True
+
+    def cancel(self):
+        if self.process and self.process.poll() is None:
+            self.process.kill()
+        with self.lock:
+            self.finished = True
+            self.status = "Run cancelled."
+            self.current_prompt = None
+            self.pending_answer = ""
+        self.response_event.set()
+
+    def _parse_recent_output_locked(self):
+        for line in self.output.splitlines()[-20:]:
+            if line.startswith("Output file will be: "):
+                possible_path = Path(line.split("Output file will be: ", 1)[1].strip())
+                if possible_path.exists():
+                    self.generated_file = possible_path
+            elif "written to '" in line:
+                match = re.search(r"written to '([^']+)'", line)
+                if match:
+                    possible_path = Path(match.group(1))
+                    if possible_path.exists():
+                        self.generated_file = possible_path
+
+            append_unique(self.spotify_links, SPOTIFY_LINK_RE.findall(line))
+            append_unique(self.youtube_links, YOUTUBE_LINK_RE.findall(line))
+
+    def artifact_url(self):
+        if not self.generated_file or not self.generated_file.exists():
+            return None
+        return f"/artifact?session_id={urllib.parse.quote(self.id)}"
+
+    def serialize(self):
+        with self.lock:
+            artifact_path = str(self.generated_file) if self.generated_file else None
+            artifact_kind = None
+            artifact_url = None
+            if self.generated_file and self.generated_file.exists():
+                artifact_kind = self.generated_file.suffix.lower().lstrip(".")
+                artifact_url = self.artifact_url()
+
+            return {
+                "session_id": self.id,
+                "status": self.status,
+                "finished": self.finished,
+                "exit_code": self.exit_code,
+                "output": self.output,
+                "prompt": self.current_prompt,
+                "artifact_path": artifact_path,
+                "artifact_kind": artifact_kind,
+                "artifact_url": artifact_url,
+                "spotify_links": list(self.spotify_links),
+                "youtube_links": list(self.youtube_links),
+                "error": self.error,
+            }
+
+
+def create_session(form):
+    session = InteractiveRunSession(form)
+    with SESSIONS_LOCK:
+        SESSIONS[session.id] = session
+    session.start()
+    return session
+
+
+def get_session(session_id):
+    with SESSIONS_LOCK:
+        return SESSIONS.get(session_id)
+
+
+def render_page(form, status="Ready."):
     option = lambda current, value: " selected" if current == value else ""
     checked = lambda name: " checked" if form.get(name) else ""
 
@@ -296,7 +519,7 @@ def render_page(form, status="", output=""):
       color: #1f2a21;
     }}
     .page {{
-      max-width: 980px;
+      max-width: 1120px;
       margin: 0 auto;
       padding: 24px;
     }}
@@ -340,6 +563,10 @@ def render_page(form, status="", output=""):
     button.secondary {{
       background: #334538;
     }}
+    button.ghost {{
+      background: #dfe8df;
+      color: #183323;
+    }}
     .status {{
       white-space: pre-wrap;
       color: #234a31;
@@ -364,11 +591,30 @@ def render_page(form, status="", output=""):
       padding: 16px;
       border-radius: 12px;
       overflow-x: auto;
+      min-height: 260px;
+      max-height: 520px;
+      overflow-y: auto;
     }}
     .hint {{
       color: #536257;
       font-size: 0.95rem;
       margin-top: 0;
+    }}
+    iframe {{
+      width: 100%;
+      min-height: 520px;
+      border: 1px solid #d8dfd8;
+      border-radius: 12px;
+      background: white;
+    }}
+    .pill-links a {{
+      display: inline-block;
+      margin: 0 8px 8px 0;
+      padding: 8px 12px;
+      border-radius: 999px;
+      background: #edf4ee;
+      color: #1f7a4d;
+      text-decoration: none;
     }}
     @media (max-width: 720px) {{
       .grid {{
@@ -380,7 +626,7 @@ def render_page(form, status="", output=""):
 <body>
   <div class="page">
     <h1>Spotify Playlist Picker Web</h1>
-    <p class="hint">Enter your Spotify app settings once, then follow the same decision flow as the terminal app without seeing unrelated options.</p>
+    <p class="hint">Run the picker in a live web terminal, answer follow-up prompts in place, and preview generated HTML output directly below.</p>
 
     <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
@@ -400,7 +646,7 @@ def render_page(form, status="", output=""):
       </div>
     </form>
 
-    <form method="post" action="/run" class="card" id="run-form">
+    <form class="card" id="run-form">
       <h2>Run Options</h2>
       <input type="hidden" id="run-client-id" name="client_id" value="{escape(form['client_id'])}">
       <input type="hidden" id="run-client-secret" name="client_secret" value="{escape(form['client_secret'])}">
@@ -422,124 +668,169 @@ def render_page(form, status="", output=""):
       </div>
 
       <div id="visibility-section">
-      <h3 class="section-title">Playlist Visibility</h3>
-      <p class="section-copy">Use this when you want to limit personal playlist sources to public playlists, private playlists, or either.</p>
-      <div class="grid">
-        <label for="visibility">Playlist visibility</label>
-        <select id="visibility" name="visibility">
-          <option{option(form['visibility'], 'Any visibility')}>Any visibility</option>
-          <option{option(form['visibility'], 'Public only')}>Public only</option>
-          <option{option(form['visibility'], 'Private only')}>Private only</option>
-        </select>
-      </div>
+        <h3 class="section-title">Playlist Visibility</h3>
+        <p class="section-copy">Use this when you want to limit personal playlist sources to public playlists, private playlists, or either.</p>
+        <div class="grid">
+          <label for="visibility">Playlist visibility</label>
+          <select id="visibility" name="visibility">
+            <option{option(form['visibility'], 'Any visibility')}>Any visibility</option>
+            <option{option(form['visibility'], 'Public only')}>Public only</option>
+            <option{option(form['visibility'], 'Private only')}>Private only</option>
+          </select>
+        </div>
       </div>
 
       <div id="playlist-filter-section">
-      <h3 class="section-title">Playlist Name Filter</h3>
-      <p class="section-copy">This only appears when you choose to filter your own playlists by name.</p>
-      <div class="grid">
-        <label for="filter_mode">Filter mode</label>
-        <select id="filter_mode" name="filter_mode">
-          <option{option(form['filter_mode'], 'Rediscover preset')}>Rediscover preset</option>
-          <option{option(form['filter_mode'], 'Contains text')}>Contains text</option>
-          <option{option(form['filter_mode'], 'Custom regex')}>Custom regex</option>
-        </select>
+        <h3 class="section-title">Playlist Name Filter</h3>
+        <p class="section-copy">This only appears when you choose to filter your own playlists by name.</p>
+        <div class="grid">
+          <label for="filter_mode">Filter mode</label>
+          <select id="filter_mode" name="filter_mode">
+            <option{option(form['filter_mode'], 'Rediscover preset')}>Rediscover preset</option>
+            <option{option(form['filter_mode'], 'Contains text')}>Contains text</option>
+            <option{option(form['filter_mode'], 'Custom regex')}>Custom regex</option>
+          </select>
 
-        <label for="filter_value" id="filter-value-label">Filter text or regex</label>
-        <input id="filter_value" name="filter_value" value="{escape(form['filter_value'])}">
-      </div>
+          <label for="filter_value" id="filter-value-label">Filter text or regex</label>
+          <input id="filter_value" name="filter_value" value="{escape(form['filter_value'])}">
+        </div>
       </div>
 
       <div id="surprise-section">
-      <h3 class="section-title">Surprise Me</h3>
-      <p class="section-copy">Choose whether Surprise Me uses public discovery or random-song.com.</p>
-      <div class="grid">
-        <label for="surprise_mode">Mode</label>
-        <select id="surprise_mode" name="surprise_mode">
-          <option{option(form['surprise_mode'], 'Random emotions/genres via public discovery')}>Random emotions/genres via public discovery</option>
-          <option{option(form['surprise_mode'], 'random-song.com default')}>random-song.com default</option>
-          <option{option(form['surprise_mode'], 'random-song.com custom')}>random-song.com custom</option>
-        </select>
-      </div>
+        <h3 class="section-title">Surprise Me</h3>
+        <p class="section-copy">Choose whether Surprise Me uses public discovery or random-song.com.</p>
+        <div class="grid">
+          <label for="surprise_mode">Mode</label>
+          <select id="surprise_mode" name="surprise_mode">
+            <option{option(form['surprise_mode'], 'Random emotions/genres via public discovery')}>Random emotions/genres via public discovery</option>
+            <option{option(form['surprise_mode'], 'random-song.com default')}>random-song.com default</option>
+            <option{option(form['surprise_mode'], 'random-song.com custom')}>random-song.com custom</option>
+          </select>
+        </div>
       </div>
 
       <div id="public-discovery-options-section">
-      <h3 class="section-title">Public Discovery Settings</h3>
-      <p class="section-copy">These settings control how many public playlists are considered and what size range they must fall into.</p>
-      <div class="grid">
-        <label for="max_playlists">Max playlists</label>
-        <input id="max_playlists" name="max_playlists" value="{escape(form['max_playlists'])}">
+        <h3 class="section-title">Public Discovery Settings</h3>
+        <p class="section-copy">These settings control how many public playlists are considered and what size range they must fall into.</p>
+        <div class="grid">
+          <label for="max_playlists">Max playlists</label>
+          <input id="max_playlists" name="max_playlists" value="{escape(form['max_playlists'])}">
 
-        <label for="min_playlist_size">Min playlist size</label>
-        <input id="min_playlist_size" name="min_playlist_size" value="{escape(form['min_playlist_size'])}">
+          <label for="min_playlist_size">Min playlist size</label>
+          <input id="min_playlist_size" name="min_playlist_size" value="{escape(form['min_playlist_size'])}">
 
-        <label for="max_playlist_size">Max playlist size</label>
-        <input id="max_playlist_size" name="max_playlist_size" value="{escape(form['max_playlist_size'])}">
+          <label for="max_playlist_size">Max playlist size</label>
+          <input id="max_playlist_size" name="max_playlist_size" value="{escape(form['max_playlist_size'])}">
 
-        <label for="discovery_mode">Discovery mode</label>
-        <select id="discovery_mode" name="discovery_mode">
-          <option{option(form['discovery_mode'], 'Hybrid')}>Hybrid</option>
-          <option{option(form['discovery_mode'], 'Spotify public playlists')}>Spotify public playlists</option>
-          <option{option(form['discovery_mode'], 'YouTube playlists')}>YouTube playlists</option>
-          <option{option(form['discovery_mode'], 'Track search only')}>Track search only</option>
-        </select>
-      </div>
+          <label for="discovery_mode">Discovery mode</label>
+          <select id="discovery_mode" name="discovery_mode">
+            <option{option(form['discovery_mode'], 'Hybrid')}>Hybrid</option>
+            <option{option(form['discovery_mode'], 'Spotify public playlists')}>Spotify public playlists</option>
+            <option{option(form['discovery_mode'], 'YouTube playlists')}>YouTube playlists</option>
+            <option{option(form['discovery_mode'], 'Track search only')}>Track search only</option>
+          </select>
+        </div>
       </div>
 
       <div id="public-keywords-section">
-      <h3 class="section-title">Public Discovery Keywords</h3>
-      <p class="section-copy">Enter one or more words or phrases, like <code>happy</code>, <code>yacht rock</code>, or <code>"summer jazz"</code>.</p>
-      <div class="grid">
-        <label for="keywords">Keywords</label>
-        <input id="keywords" name="keywords" value="{escape(form['keywords'])}">
-      </div>
+        <h3 class="section-title">Public Discovery Keywords</h3>
+        <p class="section-copy">Enter one or more words or phrases, like <code>happy</code>, <code>yacht rock</code>, or <code>"summer jazz"</code>.</p>
+        <div class="grid">
+          <label for="keywords">Keywords</label>
+          <input id="keywords" name="keywords" value="{escape(form['keywords'])}">
+        </div>
       </div>
 
       <div id="random-song-custom-section">
-      <h3 class="section-title">random-song.com Custom Options</h3>
-      <p class="section-copy">Leave values as <code>random</code> when you want random-song.com to choose for you.</p>
-      <div class="grid">
-        <label for="random_genre">Custom genre</label>
-        <input id="random_genre" name="random_genre" value="{escape(form['random_genre'])}">
+        <h3 class="section-title">random-song.com Custom Options</h3>
+        <p class="section-copy">Leave values as <code>random</code> when you want random-song.com to choose for you.</p>
+        <div class="grid">
+          <label for="random_genre">Custom genre</label>
+          <input id="random_genre" name="random_genre" value="{escape(form['random_genre'])}">
 
-        <label for="random_market">Custom market</label>
-        <input id="random_market" name="random_market" value="{escape(form['random_market'])}">
+          <label for="random_market">Custom market</label>
+          <input id="random_market" name="random_market" value="{escape(form['random_market'])}">
 
-        <label for="random_decade">Custom decade</label>
-        <input id="random_decade" name="random_decade" value="{escape(form['random_decade'])}">
-      </div>
+          <label for="random_decade">Custom decade</label>
+          <input id="random_decade" name="random_decade" value="{escape(form['random_decade'])}">
+        </div>
 
-      <div class="row" style="margin-top: 12px;">
-        <label><input type="checkbox" name="random_new"{checked('random_new')}> New releases only</label>
-        <label><input type="checkbox" name="random_exclude_singles"{checked('random_exclude_singles')}> Exclude singles</label>
-      </div>
+        <div class="row" style="margin-top: 12px;">
+          <label><input type="checkbox" name="random_new"{checked('random_new')}> New releases only</label>
+          <label><input type="checkbox" name="random_exclude_singles"{checked('random_exclude_singles')}> Exclude singles</label>
+        </div>
       </div>
 
       <div id="link-section">
-      <h3 class="section-title">Link Lookup</h3>
-      <p class="section-copy">Choose whether the resulting songs should include Spotify links, YouTube links, both, or no links.</p>
-      <div class="grid">
-        <label for="link_choice">Link lookup</label>
-        <select id="link_choice" name="link_choice">
-          <option{option(form['link_choice'], 'No links')}>No links</option>
-          <option{option(form['link_choice'], 'Spotify links')}>Spotify links</option>
-          <option{option(form['link_choice'], 'YouTube links')}>YouTube links</option>
-          <option{option(form['link_choice'], 'Both Spotify and YouTube')}>Both Spotify and YouTube</option>
-        </select>
+        <h3 class="section-title">Link Lookup</h3>
+        <p class="section-copy">Choose whether the resulting songs should include Spotify links, YouTube links, both, or no links.</p>
+        <div class="grid">
+          <label for="link_choice">Link lookup</label>
+          <select id="link_choice" name="link_choice">
+            <option{option(form['link_choice'], 'No links')}>No links</option>
+            <option{option(form['link_choice'], 'Spotify links')}>Spotify links</option>
+            <option{option(form['link_choice'], 'YouTube links')}>YouTube links</option>
+            <option{option(form['link_choice'], 'Both Spotify and YouTube')}>Both Spotify and YouTube</option>
+          </select>
+        </div>
       </div>
+
+      <div id="output-format-section">
+        <h3 class="section-title">Multi-song Output</h3>
+        <p class="section-copy">If you request more than one song, you can keep it in the live terminal or generate a text or HTML file.</p>
+        <div class="grid">
+          <label for="output_format">Output format</label>
+          <select id="output_format" name="output_format">
+            <option{option(form['output_format'], 'terminal')}>terminal</option>
+            <option{option(form['output_format'], 'html')}>html</option>
+            <option{option(form['output_format'], 'txt')}>txt</option>
+          </select>
+        </div>
       </div>
 
       <div class="row" style="margin-top: 16px;">
-        <button type="submit">Run Picker</button>
+        <button type="submit" id="run-button">Run Picker</button>
+        <button type="button" class="ghost hidden" id="cancel-button">Cancel Run</button>
       </div>
     </form>
 
     <div class="card">
-      <div class="status">{escape(status)}</div>
-      <pre>{escape(output)}</pre>
+      <h2>Run Status</h2>
+      <div class="status" id="status-text">{escape(status)}</div>
+    </div>
+
+    <div class="card hidden" id="prompt-card">
+      <h2>Prompt</h2>
+      <div class="status" id="prompt-text"></div>
+      <div class="row" id="prompt-choice-row"></div>
+      <form id="prompt-form" class="hidden" style="margin-top: 14px;">
+        <div class="row">
+          <input id="prompt-input" autocomplete="off" placeholder="Enter your answer">
+          <button type="submit">Send Answer</button>
+        </div>
+      </form>
+    </div>
+
+    <div class="card">
+      <h2>Live Terminal</h2>
+      <pre id="terminal-output"></pre>
+    </div>
+
+    <div class="card hidden" id="artifact-card">
+      <h2>Generated File</h2>
+      <div class="row" id="artifact-actions"></div>
+      <iframe id="artifact-frame" class="hidden"></iframe>
+    </div>
+
+    <div class="card hidden" id="links-card">
+      <h2>Collected Links</h2>
+      <div class="row" id="link-action-row"></div>
+      <div class="pill-links" id="links-list"></div>
     </div>
   </div>
   <script>
+    let currentSessionId = null;
+    let pollTimer = null;
     const settingsClientId = document.getElementById("client_id");
     const settingsClientSecret = document.getElementById("client_secret");
     const settingsRedirectUri = document.getElementById("redirect_uri");
@@ -547,6 +838,7 @@ def render_page(form, status="", output=""):
     const runClientSecret = document.getElementById("run-client-secret");
     const runRedirectUri = document.getElementById("run-redirect-uri");
     const sourceSelect = document.getElementById("source");
+    const numSongsInput = document.getElementById("num_songs");
     const visibilitySelect = document.getElementById("visibility");
     const filterModeSelect = document.getElementById("filter_mode");
     const surpriseModeSelect = document.getElementById("surprise_mode");
@@ -556,11 +848,37 @@ def render_page(form, status="", output=""):
     const publicKeywordsSection = document.getElementById("public-keywords-section");
     const surpriseSection = document.getElementById("surprise-section");
     const randomSongCustomSection = document.getElementById("random-song-custom-section");
+    const outputFormatSection = document.getElementById("output-format-section");
     const filterValueInput = document.getElementById("filter_value");
     const filterValueLabel = document.getElementById("filter-value-label");
+    const runForm = document.getElementById("run-form");
+    const runButton = document.getElementById("run-button");
+    const cancelButton = document.getElementById("cancel-button");
+    const statusText = document.getElementById("status-text");
+    const terminalOutput = document.getElementById("terminal-output");
+    const promptCard = document.getElementById("prompt-card");
+    const promptText = document.getElementById("prompt-text");
+    const promptChoiceRow = document.getElementById("prompt-choice-row");
+    const promptForm = document.getElementById("prompt-form");
+    const promptInput = document.getElementById("prompt-input");
+    const artifactCard = document.getElementById("artifact-card");
+    const artifactActions = document.getElementById("artifact-actions");
+    const artifactFrame = document.getElementById("artifact-frame");
+    const linksCard = document.getElementById("links-card");
+    const linkActionRow = document.getElementById("link-action-row");
+    const linksList = document.getElementById("links-list");
 
     function setHidden(element, shouldHide) {{
       element.classList.toggle("hidden", shouldHide);
+    }}
+
+    function wantsMultipleSongs() {{
+      const value = numSongsInput.value.trim().toLowerCase();
+      if (value === "one") {{
+        return false;
+      }}
+      const parsed = parseInt(value || "1", 10);
+      return !Number.isNaN(parsed) && parsed > 1;
     }}
 
     function updateFlow() {{
@@ -577,6 +895,7 @@ def render_page(form, status="", output=""):
       setHidden(publicKeywordsSection, source !== "Public discovery");
       setHidden(surpriseSection, source !== "Surprise me");
       setHidden(randomSongCustomSection, !(source === "Surprise me" && surpriseMode === "random-song.com custom"));
+      setHidden(outputFormatSection, !wantsMultipleSongs());
 
       const needsFilterValue = filterMode !== "Rediscover preset";
       filterValueInput.disabled = !needsFilterValue;
@@ -589,12 +908,205 @@ def render_page(form, status="", output=""):
       runRedirectUri.value = settingsRedirectUri.value;
     }}
 
+    function setRunningState(isRunning) {{
+      runButton.disabled = isRunning;
+      cancelButton.classList.toggle("hidden", !isRunning);
+    }}
+
+    function openLinks(urls) {{
+      urls.forEach((url) => window.open(url, "_blank"));
+    }}
+
+    function renderLinks(data) {{
+      const spotifyLinks = data.spotify_links || [];
+      const youtubeLinks = data.youtube_links || [];
+      const allLinks = [...spotifyLinks, ...youtubeLinks];
+      setHidden(linksCard, allLinks.length === 0);
+      if (allLinks.length === 0) {{
+        linksList.innerHTML = "";
+        linkActionRow.innerHTML = "";
+        return;
+      }}
+
+      linkActionRow.innerHTML = "";
+      if (spotifyLinks.length) {{
+        const openSpotify = document.createElement("button");
+        openSpotify.type = "button";
+        openSpotify.textContent = `Open all Spotify links (${{spotifyLinks.length}})`;
+        openSpotify.addEventListener("click", () => openLinks(spotifyLinks));
+        linkActionRow.appendChild(openSpotify);
+      }}
+      if (youtubeLinks.length) {{
+        const openYoutube = document.createElement("button");
+        openYoutube.type = "button";
+        openYoutube.textContent = `Open all YouTube links (${{youtubeLinks.length}})`;
+        openYoutube.addEventListener("click", () => openLinks(youtubeLinks));
+        linkActionRow.appendChild(openYoutube);
+      }}
+      if (spotifyLinks.length && youtubeLinks.length) {{
+        const openAll = document.createElement("button");
+        openAll.type = "button";
+        openAll.className = "secondary";
+        openAll.textContent = "Open all links";
+        openAll.addEventListener("click", () => openLinks(allLinks));
+        linkActionRow.appendChild(openAll);
+      }}
+
+      linksList.innerHTML = allLinks.map((url) => `<a href="${{url}}" target="_blank" rel="noreferrer">${{url}}</a>`).join("");
+    }}
+
+    function renderArtifact(data) {{
+      const hasArtifact = Boolean(data.artifact_url);
+      setHidden(artifactCard, !hasArtifact);
+      artifactActions.innerHTML = "";
+      artifactFrame.classList.add("hidden");
+      artifactFrame.removeAttribute("src");
+
+      if (!hasArtifact) {{
+        return;
+      }}
+
+      const openButton = document.createElement("a");
+      openButton.href = data.artifact_url;
+      openButton.target = "_blank";
+      openButton.rel = "noreferrer";
+      openButton.textContent = `Open ${{data.artifact_kind || 'file'}}`;
+      openButton.className = "secondary";
+      openButton.style.display = "inline-block";
+      openButton.style.padding = "10px 16px";
+      openButton.style.borderRadius = "999px";
+      openButton.style.color = "white";
+      openButton.style.textDecoration = "none";
+      artifactActions.appendChild(openButton);
+
+      if (data.artifact_kind === "html") {{
+        artifactFrame.src = data.artifact_url;
+        artifactFrame.classList.remove("hidden");
+      }}
+    }}
+
+    function renderPrompt(data) {{
+      const prompt = data.prompt;
+      setHidden(promptCard, !prompt);
+      promptChoiceRow.innerHTML = "";
+      promptForm.classList.add("hidden");
+      promptInput.value = "";
+
+      if (!prompt) {{
+        promptText.textContent = "";
+        return;
+      }}
+
+      promptText.textContent = prompt.prompt_text;
+      if (prompt.type === "choice") {{
+        prompt.choices.forEach((choice) => {{
+          const button = document.createElement("button");
+          button.type = "button";
+          button.textContent = choice;
+          button.addEventListener("click", () => sendPromptAnswer(choice));
+          promptChoiceRow.appendChild(button);
+        }});
+      }} else {{
+        promptInput.placeholder = prompt.placeholder || "Enter your answer";
+        promptForm.classList.remove("hidden");
+        promptInput.focus();
+      }}
+    }}
+
+    function renderSession(data) {{
+      statusText.textContent = data.status || "Running...";
+      terminalOutput.textContent = data.output || "";
+      terminalOutput.scrollTop = terminalOutput.scrollHeight;
+      renderPrompt(data);
+      renderArtifact(data);
+      renderLinks(data);
+
+      if (data.finished) {{
+        setRunningState(false);
+        if (pollTimer) {{
+          clearTimeout(pollTimer);
+          pollTimer = null;
+        }}
+      }} else {{
+        setRunningState(true);
+        pollTimer = setTimeout(pollSession, 700);
+      }}
+    }}
+
+    async function pollSession() {{
+      if (!currentSessionId) {{
+        return;
+      }}
+      const response = await fetch(`/api/session?session_id=${{encodeURIComponent(currentSessionId)}}`);
+      const data = await response.json();
+      renderSession(data);
+    }}
+
+    async function startRun(formData) {{
+      const response = await fetch("/api/start", {{
+        method: "POST",
+        body: new URLSearchParams(formData),
+      }});
+      const data = await response.json();
+      if (!response.ok) {{
+        statusText.textContent = data.error || "Could not start run.";
+        setRunningState(false);
+        return;
+      }}
+      currentSessionId = data.session_id;
+      terminalOutput.textContent = "";
+      renderArtifact({{}});
+      renderLinks({{ spotify_links: [], youtube_links: [] }});
+      renderPrompt({{ prompt: null }});
+      statusText.textContent = "Run started...";
+      pollSession();
+    }}
+
+    async function sendPromptAnswer(answer) {{
+      if (!currentSessionId) {{
+        return;
+      }}
+      await fetch("/api/respond", {{
+        method: "POST",
+        body: new URLSearchParams({{ session_id: currentSessionId, answer }}),
+      }});
+      pollSession();
+    }}
+
+    async function cancelRun() {{
+      if (!currentSessionId) {{
+        return;
+      }}
+      await fetch("/api/cancel", {{
+        method: "POST",
+        body: new URLSearchParams({{ session_id: currentSessionId }}),
+      }});
+      pollSession();
+    }}
+
     settingsClientId.addEventListener("input", syncSettingsIntoRunForm);
     settingsClientSecret.addEventListener("input", syncSettingsIntoRunForm);
     settingsRedirectUri.addEventListener("input", syncSettingsIntoRunForm);
     sourceSelect.addEventListener("change", updateFlow);
+    numSongsInput.addEventListener("input", updateFlow);
     filterModeSelect.addEventListener("change", updateFlow);
     surpriseModeSelect.addEventListener("change", updateFlow);
+    cancelButton.addEventListener("click", cancelRun);
+    promptForm.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      sendPromptAnswer(promptInput.value);
+    }});
+    runForm.addEventListener("submit", (event) => {{
+      event.preventDefault();
+      syncSettingsIntoRunForm();
+      setRunningState(true);
+      if (pollTimer) {{
+        clearTimeout(pollTimer);
+        pollTimer = null;
+      }}
+      startRun(new FormData(runForm));
+    }});
+
     syncSettingsIntoRunForm();
     updateFlow();
   </script>
@@ -611,41 +1123,100 @@ class WebHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(encoded)
 
+    def _send_json(self, payload, status_code=200):
+        encoded = json.dumps(payload).encode("utf-8")
+        self.send_response(status_code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Content-Length", str(len(encoded)))
+        self.end_headers()
+        self.wfile.write(encoded)
+
+    def _read_form(self):
+        content_length = int(self.headers.get("Content-Length", "0"))
+        return merge_with_defaults(parse_form_data(self.rfile.read(content_length)))
+
     def do_GET(self):
-        self._send_html(render_page(build_default_form_data(), status="Ready.", output=""))
+        parsed = urllib.parse.urlparse(self.path)
+        query = urllib.parse.parse_qs(parsed.query)
+
+        if parsed.path == "/":
+            self._send_html(render_page(build_default_form_data()))
+            return
+
+        if parsed.path == "/api/session":
+            session_id = query.get("session_id", [""])[0]
+            session = get_session(session_id)
+            if not session:
+                self._send_json({"error": "Session not found."}, status_code=404)
+                return
+            self._send_json(session.serialize())
+            return
+
+        if parsed.path == "/artifact":
+            session_id = query.get("session_id", [""])[0]
+            session = get_session(session_id)
+            if not session or not session.generated_file or not session.generated_file.exists():
+                self.send_error(404, "Artifact not found.")
+                return
+
+            mime_type = mimetypes.guess_type(str(session.generated_file))[0] or "application/octet-stream"
+            payload = session.generated_file.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mime_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+            return
+
+        self.send_error(404)
 
     def do_POST(self):
-        content_length = int(self.headers.get("Content-Length", "0"))
-        form = merge_with_defaults(parse_form_data(self.rfile.read(content_length)))
-
         if self.path == "/save":
+            form = self._read_form()
             validation_error = validate_form({**form, "num_songs": "1", "source": "All playlists"})
             if validation_error and "Client ID" in validation_error:
-                self._send_html(render_page(form, status=validation_error, output=""))
+                self._send_html(render_page(form, status=validation_error))
                 return
 
             save_credentials_from_form(form)
-            self._send_html(render_page(form, status=f"Saved settings to {CONFIG_PATH}.", output=""))
+            self._send_html(render_page(form, status=f"Saved settings to {CONFIG_PATH}."))
             return
 
-        if self.path == "/run":
+        if self.path == "/api/start":
+            form = self._read_form()
             validation_error = validate_form(form)
             if validation_error:
-                self._send_html(render_page(form, status=validation_error, output=""))
+                self._send_json({"error": validation_error}, status_code=400)
                 return
 
             save_credentials_from_form(form)
-            try:
-                output = run_cli_from_form(form)
-                status = "Run finished."
-            except Exception as error:
-                output = ""
-                status = f"Run failed: {error}"
-
-            self._send_html(render_page(form, status=status, output=output))
+            session = create_session(form)
+            self._send_json({"session_id": session.id})
             return
 
-        self._send_html(render_page(form, status="Unknown action.", output=""), status_code=404)
+        if self.path == "/api/respond":
+            form = self._read_form()
+            session = get_session(form.get("session_id", ""))
+            if not session:
+                self._send_json({"error": "Session not found."}, status_code=404)
+                return
+            if not session.respond(form.get("answer", "")):
+                self._send_json({"error": "No prompt is waiting for input."}, status_code=409)
+                return
+            self._send_json({"ok": True})
+            return
+
+        if self.path == "/api/cancel":
+            form = self._read_form()
+            session = get_session(form.get("session_id", ""))
+            if not session:
+                self._send_json({"error": "Session not found."}, status_code=404)
+                return
+            session.cancel()
+            self._send_json({"ok": True})
+            return
+
+        self.send_error(404)
 
     def log_message(self, format, *args):
         return

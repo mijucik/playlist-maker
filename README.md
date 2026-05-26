@@ -116,7 +116,10 @@ The web app lets people:
 - enter Spotify app credentials once and save them locally
 - move through the same decision flow as the terminal app without seeing every option at once
 - choose common playlist/search options from dropdowns
-- run the picker without manually stepping through every CLI prompt
+- watch the run happen in a live web terminal instead of waiting for one final dump
+- answer follow-up prompts like cache refresh, playlist creation, and playlist naming directly in the browser
+- preview generated HTML output inside the web app and open generated files from there
+- open collected Spotify and YouTube links from browser buttons instead of losing that functionality
 - open the local launcher in a browser automatically
 
 ### 4. Create a Spotify app
