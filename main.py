@@ -12,6 +12,7 @@ from pathlib import Path
 
 import spotipy
 import spotipy.exceptions
+from spotipy.cache_handler import CacheHandler
 from spotipy.oauth2 import SpotifyOAuth
 from tqdm import tqdm
 
@@ -23,7 +24,7 @@ DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 SCOPE = "user-read-private playlist-read-private playlist-modify-private playlist-modify-public"
 
 
-class SecureTokenCacheHandler:
+class SecureTokenCacheHandler(CacheHandler):
     """Store Spotify tokens in a private file with owner-only permissions."""
 
     def __init__(self, cache_path):
