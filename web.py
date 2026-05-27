@@ -91,8 +91,16 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 WEB_PROGRESS_RE = re.compile(r"(?:\d+%\||█{2,}|song/s|track/s|playlist/s|it/s)")
 WEB_NOISE_EXACT_LINES = {
     "1. My Spotify Playlists",
+    "1. My Spotify playlists",
     "2. Public Discovery",
+    "2. Public discovery",
     "3. Surprise Me",
+    "3. Surprise me",
+    "Links to include:",
+    "1. No links",
+    "2. YouTube only",
+    "3. Spotify only",
+    "4. Spotify and YouTube",
     "1. All playlists",
     "2. Filter by name",
     "3. Own playlists only",
@@ -118,6 +126,7 @@ WEB_NOISE_PREFIXES = (
     "Source:",
     "Playlist selection:",
     "Playlist visibility:",
+    "Choose link output, 1-4",
     "Filter playlists by name:",
     "Surprise Me mode:",
     "Enter 1, 2, or 3",
@@ -129,6 +138,8 @@ WEB_NOISE_PREFIXES = (
     "Max songs to collect before selecting?",
     "Enter one or more words or phrases",
     "Output format (",
+    "Choose link output, 1-4",
+    "Text to match in playlist names:",
     "Text to match in playlist names:",
     "Regex for playlist names:",
     "Configure random-song.com",
@@ -263,6 +274,9 @@ def should_include_web_output_line(line):
     if not cleaned:
         return False
 
+    if set(cleaned) in ({"-"}, {"="}):
+        return False
+
     if cleaned in WEB_NOISE_EXACT_LINES:
         return False
 
@@ -360,6 +374,7 @@ def build_default_form_data():
         "random_decade": "random",
         "random_new": "",
         "random_exclude_singles": "",
+        "link_platform": "2",
         "output_format": "terminal",
         "verbose": "",
     }
@@ -429,6 +444,7 @@ def build_initial_cli_answers(form):
             lines.append("yes" if form.get("random_new") else "no")
             lines.append("yes" if form.get("random_exclude_singles") else "no")
 
+    lines.append(form.get("link_platform", "2"))
     lines.append(form["output_format"])
 
     return "\n".join(lines) + "\n"
@@ -492,6 +508,8 @@ def validate_form(form):
         return "Minimum playlist size cannot be greater than maximum playlist size."
     if max_songs_pool is not None and max_songs_pool < 1:
         return "Max songs to collect must be a positive integer when provided."
+    if form.get("link_platform", "2") not in {"1", "2", "3", "4"}:
+        return "Link option must be No links, YouTube only, Spotify only, or Spotify and YouTube."
 
     if form["output_format"] not in {"terminal", "html", "txt"}:
         return "Output format must be terminal, html, or txt."
@@ -1261,7 +1279,19 @@ def render_page(form, status="Ready."):
           <label><input type="checkbox" name="random_exclude_singles"{checked('random_exclude_singles')}> Exclude singles</label>
         </div>
       </div>
-
+      <div id="link-platform-section">
+        <h3 class="section-title">Links</h3>
+        <p class="section-copy">Choose which links to include in the output. YouTube works without Spotify credentials. Spotify links require valid Spotify app credentials for exact track matches.</p>
+        <div class="grid">
+          <label for="link_platform">Links to include</label>
+          <select id="link_platform" name="link_platform">
+            <option value="1"{option(form['link_platform'], '1')}>No links</option>
+            <option value="2"{option(form['link_platform'], '2')}>YouTube only</option>
+            <option value="3"{option(form['link_platform'], '3')}>Spotify only</option>
+            <option value="4"{option(form['link_platform'], '4')}>Spotify and YouTube</option>
+          </select>
+        </div>
+      </div>
       <div id="output-format-section">
         <h3 class="section-title">Output Format</h3>
         <p class="section-copy">Choose how to output the selected song(s): display in the live terminal or generate a text or HTML file.</p>

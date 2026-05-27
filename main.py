@@ -347,10 +347,14 @@ def prompt_for_env_var(name, prompt_text, secret=False, default=None):
 
 def prompt_for_visibility_filter():
     while True:
-        print("Playlist visibility:")
-        print("1. Any")
-        print("2. Public only")
-        print("3. Private only")
+        print_cli_menu(
+            "Playlist visibility",
+            [
+                ("1", "Any"),
+                ("2", "Public only"),
+                ("3", "Private only"),
+            ],
+        )
         visibility_choice = input("Enter 1, 2, or 3 [1]: ").strip() or '1'
 
         if visibility_choice == '1':
@@ -359,6 +363,30 @@ def prompt_for_visibility_filter():
             return 'public'
         if visibility_choice == '3':
             return 'private'
+
+        print("Invalid choice.")
+
+def prompt_for_link_platform():
+    while True:
+        print_cli_menu(
+            "Links to include",
+            [
+                ("1", "No links"),
+                ("2", "YouTube only"),
+                ("3", "Spotify only"),
+                ("4", "Spotify and YouTube"),
+            ],
+        )
+        choice = input("Enter 1, 2, 3, or 4 [2]: ").strip() or "2"
+
+        if choice == "1":
+            return None
+        if choice == "2":
+            return "youtube"
+        if choice == "3":
+            return "spotify"
+        if choice == "4":
+            return "both"
 
         print("Invalid choice.")
 
@@ -599,6 +627,28 @@ class LazySpotifyClient:
 sp = LazySpotifyClient()
 
 
+CLI_WIDTH = 72
+
+
+def print_cli_rule(char="-"):
+    print(char * CLI_WIDTH)
+
+
+def print_cli_section(title):
+    print()
+    print_cli_rule("=")
+    print(title)
+    print_cli_rule("=")
+
+
+def print_cli_menu(title, options):
+    print()
+    print(f"{title}:")
+    print_cli_rule("-")
+    for number, label in options:
+        print(f"{number}. {label}")
+
+
 # Function to sanitize strings for filenames
 def sanitize_filename(name):
     valid_chars = "-_.() %s%s" % (string.ascii_letters, string.digits)
@@ -814,10 +864,14 @@ def build_filtered_playlist_cache_file(filter_label):
 
 def prompt_for_playlist_name_filter(visibility_filter='any'):
     while True:
-        print("Filter playlists by name:")
-        print("1. Rediscover preset")
-        print("2. Contains text")
-        print("3. Custom regex")
+        print_cli_menu(
+            "Filter playlists by name",
+            [
+                ("1", "Rediscover preset"),
+                ("2", "Contains text"),
+                ("3", "Custom regex"),
+            ],
+        )
         filter_choice = input("Enter 1, 2, or 3: ").strip()
 
         if filter_choice == '1':
@@ -1163,28 +1217,28 @@ def find_youtube_url(song):
     return search_url, False
 
 
-def find_spotify_url(song):
+def find_spotify_url(song, allow_search_fallback=False):
     global SPOTIFY_LINK_MATCHING_DISABLED_REASON
 
-    if song.get('spotify_url'):
-        return song.get('spotify_url'), song.get('spotify_found_exact_track', True)
+    if song.get('spotify_url') and song.get('spotify_found_exact_track'):
+        return song.get('spotify_url'), True
 
     if SPOTIFY_LINK_MATCHING_DISABLED_REASON:
-        return build_spotify_search_url(song), False
+        return (build_spotify_search_url(song), False) if allow_search_fallback else (None, False)
 
     try:
         spotify_match = resolve_song_on_spotify(song, suppress_errors=True)
     except RunAborted as error:
         SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
         add_report_list_item("warnings", f"Spotify exact-link matching stopped early: {error}")
-        return build_spotify_search_url(song), False
+        return (build_spotify_search_url(song), False) if allow_search_fallback else (None, False)
 
     if spotify_match and spotify_match.get('spotify_url'):
         if spotify_match.get('spotify_uri'):
             song['spotify_uri'] = spotify_match['spotify_uri']
-        return spotify_match['spotify_url'], spotify_match.get('spotify_found_exact_track', True)
+        return spotify_match['spotify_url'], True
 
-    return build_spotify_search_url(song), False
+    return (build_spotify_search_url(song), False) if allow_search_fallback else (None, False)
 
 
 def find_spotify_track_for_song(song):
@@ -1207,45 +1261,57 @@ def find_spotify_track_for_song(song):
 def attach_platform_links(selected_songs, link_platform):
     global SPOTIFY_LINK_MATCHING_DISABLED_REASON
 
+    for song in selected_songs:
+        song['spotify_requested'] = link_platform in {'spotify', 'both'}
+        song['youtube_requested'] = link_platform in {'youtube', 'both'}
+
     if link_platform in {'spotify', 'both'}:
         emit_web_status("links", "Finding Spotify links...", reset=True)
-        print("Finding Spotify links/search pages for the selected songs...")
+        print("Finding Spotify links for the selected songs...")
         exact_count = 0
-        search_count = 0
+        missing_count = 0
+
         for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
-            if SPOTIFY_LINK_MATCHING_DISABLED_REASON:
-                spotify_url, found_exact_track = build_spotify_search_url(song), False
-            else:
-                try:
-                    spotify_url, found_exact_track = find_spotify_url(song)
-                except Exception as error:
-                    SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
-                    add_report_list_item("warnings", f"Spotify link lookup stopped: {error}")
-                    spotify_url, found_exact_track = build_spotify_search_url(song), False
+            try:
+                spotify_url, found_exact_track = find_spotify_url(
+                    song,
+                    allow_search_fallback=False,
+                )
+            except Exception as error:
+                SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
+                add_report_list_item("warnings", f"Spotify link lookup stopped: {error}")
+                spotify_url, found_exact_track = None, False
 
             song['spotify_url'] = spotify_url
             song['spotify_found_exact_track'] = found_exact_track
+
             if found_exact_track:
                 exact_count += 1
             else:
-                search_count += 1
+                missing_count += 1
+
         update_run_report(
             links_added=True,
             spotify_exact_links=exact_count,
-            spotify_search_links=search_count,
+            spotify_search_links=0,
+            spotify_missing_links=missing_count,
         )
 
     if link_platform in {'youtube', 'both'}:
         emit_web_status("links", "Preparing YouTube Music links...")
         print("Looking up YouTube links for the selected songs...")
         youtube_count = 0
+
         for song in tqdm(selected_songs, desc='Finding YouTube links', unit='song'):
             youtube_url, found_exact_video = find_youtube_url(song)
             song['youtube_url'] = youtube_url
             song['youtube_found_exact_video'] = found_exact_video
+
             if youtube_url:
                 youtube_count += 1
+
         update_run_report(youtube_links=youtube_count)
+
     emit_web_status("links", "Links are ready.", done=True)
 
 
@@ -2110,31 +2176,45 @@ def prompt_for_playlist_size_range():
 
 
 def write_song_links_to_console(song, indent=""):
-    if song.get('spotify_url'):
-        label = "direct track" if song.get('spotify_found_exact_track') else "search page"
-        print(f"{indent}Spotify ({label}): {song['spotify_url']}")
-    if song.get('youtube_url'):
+    if song.get('spotify_requested'):
+        if song.get('spotify_url'):
+            label = "direct track" if song.get('spotify_found_exact_track') else "search page"
+            print(f"{indent}Spotify ({label}): {song['spotify_url']}")
+        else:
+            print(f"{indent}Spotify: No Spotify link found")
+
+    if song.get('youtube_requested') and song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
         print(f"{indent}YouTube ({label}): {song['youtube_url']}")
 
 
 def write_song_links_to_text_file(song, file_handle, indent=""):
-    if song.get('spotify_url'):
-        label = "direct track" if song.get('spotify_found_exact_track') else "search page"
-        file_handle.write(f"{indent}Spotify ({label}): {song['spotify_url']}\n")
-    if song.get('youtube_url'):
+    if song.get('spotify_requested'):
+        if song.get('spotify_url'):
+            label = "direct track" if song.get('spotify_found_exact_track') else "search page"
+            file_handle.write(f"{indent}Spotify ({label}): {song['spotify_url']}\n")
+        else:
+            file_handle.write(f"{indent}Spotify: No Spotify link found\n")
+
+    if song.get('youtube_requested') and song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
         file_handle.write(f"{indent}YouTube ({label}): {song['youtube_url']}\n")
 
 
 def build_song_links_html(song):
     links = []
-    if song.get('spotify_url'):
-        label = "Open in Spotify" if song.get('spotify_found_exact_track') else "Search on Spotify"
-        links.append(f"""<a href="{song['spotify_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
-    if song.get('youtube_url'):
+
+    if song.get('spotify_requested'):
+        if song.get('spotify_url'):
+            label = "Open in Spotify" if song.get('spotify_found_exact_track') else "Search on Spotify"
+            links.append(f"""<a href="{song['spotify_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
+        else:
+            links.append("<span>No Spotify link found</span>")
+
+    if song.get('youtube_requested') and song.get('youtube_url'):
         label = "Watch on YouTube" if song.get('youtube_found_exact_video') else "Search on YouTube"
         links.append(f"""<a href="{song['youtube_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
+
     return " | ".join(links)
 
 
@@ -2174,10 +2254,14 @@ def prompt_for_num_songs():
 
 def prompt_for_source_choice():
     while True:
-        print("Source:")
-        print("1. My Spotify Playlists")
-        print("2. Public Discovery")
-        print("3. Surprise Me")
+        print_cli_menu(
+            "Source",
+            [
+                ("1", "My Spotify playlists"),
+                ("2", "Public discovery"),
+                ("3", "Surprise me"),
+            ],
+        )
         source_choice = input("Enter 1, 2, or 3: ").strip()
         if source_choice in {'1', '2', '3'}:
             return source_choice
@@ -2186,11 +2270,15 @@ def prompt_for_source_choice():
 
 def prompt_for_playlist_scope():
     while True:
-        print("Playlist selection:")
-        print("1. All playlists")
-        print("2. Filter by name")
-        print("3. Own playlists only")
-        print("4. Random selection")
+        print_cli_menu(
+            "Playlist selection",
+            [
+                ("1", "All playlists"),
+                ("2", "Filter by name"),
+                ("3", "Own playlists only"),
+                ("4", "Random selection"),
+            ],
+        )
         scope = input("Enter 1, 2, 3, or 4: ").strip()
         if scope in {'1', '2', '3', '4'}:
             return scope
@@ -2229,10 +2317,14 @@ def prompt_for_keywords():
 
 def prompt_for_surprise_mode():
     while True:
-        print("Surprise Me mode:")
-        print("1. Random emotions/genres via public discovery")
-        print("2. random-song.com with its default random configuration")
-        print("3. random-song.com with custom configuration")
+        print_cli_menu(
+            "Surprise Me mode",
+            [
+                ("1", "Random emotions/genres via public discovery"),
+                ("2", "random-song.com with its default random configuration"),
+                ("3", "random-song.com with custom configuration"),
+            ],
+        )
         surprise_mode = input("Enter 1, 2, or 3: ").strip()
         if surprise_mode in {'1', '2', '3'}:
             return surprise_mode
@@ -2277,7 +2369,8 @@ if EMOTIONS_GENRES:
 
 
 def print_project_summary():
-    print("\nSpotify Playlist Picker — randomly selects songs from your playlists or public discovery.\n")
+    print_cli_section("Spotify Playlist Picker")
+    print("Randomly selects songs from your playlists or public discovery.")
 
 
 def select_random_songs(song_list, requested_count):
@@ -2684,9 +2777,11 @@ def main():
             emit_web_status("select", f"Selected {len(selected_songs)} song(s).", reset=True, done=True)
 
     num_songs = len(selected_songs)
-
-    link_platform = 'both'
-    attach_platform_links(selected_songs, link_platform)
+    link_platform = prompt_for_link_platform()
+    if link_platform:
+        attach_platform_links(selected_songs, link_platform)
+    else:
+        update_run_report(links_added=False)
 
     # Ask for file format or terminal output
     file_format = prompt_for_output_format()
@@ -2695,11 +2790,14 @@ def main():
     if file_format == 'terminal':
         emit_web_status("output", "Printing songs in the browser summary...", reset=True)
         # Display songs directly in the terminal
-        print(f"\nYour Selected Songs from {source_description}:\n")
+        print_cli_section("Selected Songs")
+        print(f"Source: {source_description}")
+        print_cli_rule("-")
         for idx, song in enumerate(selected_songs, start=1):
             song_title = song['title']
             song_artists = song['artists']
-            print(f"{idx}. {song_title} by {song_artists}")
+            print(f"{idx}. {song_title}")
+            print(f"   by {song_artists}")
             write_song_links_to_console(song, indent="   ")
         if source_choice == '4':
             print(f"\nSelected from playlists: {', '.join(selected_playlists)}")
