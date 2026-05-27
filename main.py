@@ -66,6 +66,7 @@ SPOTIFY_UNAVAILABLE_NOTICES = set()
 YOUTUBE_MUSIC_CLIENT = None
 RUN_REPORT = {}
 SPOTIFY_LINK_MATCHING_DISABLED_REASON = None
+AVOID_OPTIONAL_SPOTIFY_API = False
 
 
 class RunAborted(RuntimeError):
@@ -95,7 +96,7 @@ def emit_web_status(phase, message, detail=None, level="info", reset=False, done
 
 
 def reset_run_report():
-    global RUN_REPORT, SPOTIFY_LINK_MATCHING_DISABLED_REASON
+    global RUN_REPORT, SPOTIFY_LINK_MATCHING_DISABLED_REASON, AVOID_OPTIONAL_SPOTIFY_API
     RUN_REPORT = {
         "warnings": [],
         "errors": [],
@@ -107,6 +108,7 @@ def reset_run_report():
         "surprise_attempts": [],
     }
     SPOTIFY_LINK_MATCHING_DISABLED_REASON = None
+    AVOID_OPTIONAL_SPOTIFY_API = False
 
 
 def add_report_list_item(key, value):
@@ -467,6 +469,10 @@ def spotify_app_credentials_configured():
     return bool(client_id and client_secret)
 
 
+def optional_spotify_api_allowed():
+    return not AVOID_OPTIONAL_SPOTIFY_API
+
+
 def create_spotify_client(prompt_if_missing=True):
     global CURRENT_USER_PROFILE
     client_id, client_secret, redirect_uri = resolve_spotify_app_credentials(prompt_if_missing=prompt_if_missing)
@@ -588,6 +594,10 @@ def get_spotify_search_client(context="Spotify song matching"):
         return SPOTIFY_SEARCH_CLIENT
 
     if SPOTIFY_SEARCH_UNAVAILABLE_REASON:
+        return None
+
+    if not optional_spotify_api_allowed():
+        SPOTIFY_SEARCH_UNAVAILABLE_REASON = "Optional Spotify API calls are disabled for this run."
         return None
 
     if not spotify_app_credentials_configured():
@@ -1348,57 +1358,6 @@ def attach_platform_links(selected_songs, link_platform):
     emit_web_status("links", "Links are ready.", done=True)
 
 
-def maybe_open_platform_links(selected_songs, link_platform):
-    if not link_platform:
-        return
-
-    platform_label = {
-        'spotify': 'Spotify',
-        'youtube': 'YouTube',
-        'both': 'Spotify/YouTube',
-    }[link_platform]
-    open_choice = input(f"Do you want to open {platform_label} link(s) now? (yes/no): ").strip().lower()
-    if open_choice != 'yes':
-        return
-
-    if link_platform == 'both':
-        preferred_platform = input("Which platform should be opened first? (Enter 'spotify' or 'youtube'): ").strip().lower()
-        if preferred_platform not in {'spotify', 'youtube'}:
-            preferred_platform = 'spotify'
-        secondary_platform = 'youtube' if preferred_platform == 'spotify' else 'spotify'
-    else:
-        preferred_platform = link_platform
-        secondary_platform = None
-
-    def get_song_url(song):
-        if preferred_platform == 'spotify' and song.get('spotify_url'):
-            return song.get('spotify_url')
-        if preferred_platform == 'youtube' and song.get('youtube_url'):
-            return song.get('youtube_url')
-        if secondary_platform == 'spotify' and song.get('spotify_url'):
-            return song.get('spotify_url')
-        if secondary_platform == 'youtube' and song.get('youtube_url'):
-            return song.get('youtube_url')
-        return None
-
-    if len(selected_songs) == 1:
-        urls_to_open = [get_song_url(selected_songs[0])]
-    else:
-        open_all_choice = input("Open all song links? (yes/no): ").strip().lower()
-        if open_all_choice == 'yes':
-            urls_to_open = [get_song_url(song) for song in selected_songs]
-        else:
-            urls_to_open = [get_song_url(selected_songs[0])]
-
-    opened_count = 0
-    for url in urls_to_open:
-        if url:
-            webbrowser.open(url)
-            opened_count += 1
-
-    print(f"Opened {opened_count} link(s) in your browser.")
-
-
 def build_keyword_combinations(keywords):
     """Return search queries to try, ordered from most specific to broadest.
 
@@ -1925,7 +1884,7 @@ def fetch_surprise_discovery_tiered(
     Returns (song_list, effective_mode_label).
     """
     # ---- Tier 1: Spotify genre recommendations ----
-    if spotify_app_credentials_configured():
+    if optional_spotify_api_allowed() and spotify_app_credentials_configured():
         print("Trying Spotify genre recommendations (Tier 1)...")
         emit_web_status(
             "search",
@@ -1954,6 +1913,8 @@ def fetch_surprise_discovery_tiered(
             "Tier 1 (Spotify): no recommendations returned. "
             "Falling back to YouTube Music (Tier 2)..."
         )
+    elif not optional_spotify_api_allowed():
+        print("Optional Spotify API calls are disabled — using YouTube Music discovery.")
     else:
         print("Spotify credentials not configured — starting at YouTube Music (Tier 2).")
 
@@ -2214,8 +2175,6 @@ def collect_song_link_rows(song):
         if song.get('spotify_url'):
             label = "direct track" if song.get('spotify_found_exact_track') else "search page"
             link_rows.append((f"Spotify ({label})", song['spotify_url']))
-        else:
-            link_rows.append(("Spotify", "No Spotify link found"))
 
     if song.get('youtube_requested') and song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
@@ -2240,31 +2199,34 @@ def wrap_box_row(label, value):
     return rows
 
 
-def build_song_box_lines(index, song):
-    header = f" SONG {index} "
-    top = "┌──" + header + "─" * max(0, CLI_WIDTH - visible_len(header) - 4) + "┐"
-    bottom = "└" + "─" * (CLI_WIDTH - 2) + "┘"
-    content_lines = []
-
+def build_song_card_lines(index, song):
     rows = [
         ("Title", song.get('title') or "Unknown Title"),
         ("Artist", song.get('artists') or "Unknown Artist"),
     ]
     rows.extend(collect_song_link_rows(song))
 
-    for label, value in rows:
-        for wrapped_line in wrap_box_row(label, value):
-            content_lines.append(f"│ {pad_visible(wrapped_line, BOX_CONTENT_WIDTH)} │")
+    header = f"SONG {index} "
+    first_label, first_value = rows[0]
+    first_lines = wrap_box_row(first_label, first_value)
+    lines = [header + "-" * max(3, CLI_WIDTH - visible_len(header))]
+    lines.append(f"  {first_lines[0]}")
+    for continuation_line in first_lines[1:]:
+        lines.append(f"  {continuation_line}")
 
-    return [top, *content_lines, bottom]
+    for label, value in rows[1:]:
+        for wrapped_line in wrap_box_row(label, value):
+            lines.append(f"  {wrapped_line}")
+
+    return lines
 
 
 def print_song_card(index, song):
     print()
-    for line in build_song_box_lines(index, song):
-        if line.startswith(("┌", "└")):
+    for line_index, line in enumerate(build_song_card_lines(index, song)):
+        if line_index == 0:
             print(color_text(line, ANSI_CYAN))
-        elif line.startswith("│") and any(label in line for label in ("Title:", "Artist:", "URL:", "Spotify", "YouTube")):
+        elif any(label in line for label in ("Title:", "Artist:", "URL:", "Spotify", "YouTube")):
             print(color_text(line, ANSI_BOLD))
         else:
             print(line)
@@ -2272,7 +2234,7 @@ def print_song_card(index, song):
 
 def write_song_card_to_text_file(file_handle, index, song):
     file_handle.write("\n")
-    file_handle.write("\n".join(build_song_box_lines(index, song)))
+    file_handle.write("\n".join(build_song_card_lines(index, song)))
     file_handle.write("\n")
 
 
@@ -2283,8 +2245,6 @@ def build_song_links_html(song):
         if song.get('spotify_url'):
             label = "Open in Spotify" if song.get('spotify_found_exact_track') else "Search on Spotify"
             links.append(f"""<a href="{song['spotify_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
-        else:
-            links.append("<span>No Spotify link found</span>")
 
     if song.get('youtube_requested') and song.get('youtube_url'):
         label = "Watch on YouTube" if song.get('youtube_found_exact_video') else "Search on YouTube"
@@ -2341,6 +2301,13 @@ def prompt_for_source_choice():
         if source_choice in {'1', '2', '3'}:
             return source_choice
         print("Invalid choice.")
+
+
+def prompt_for_avoid_optional_spotify_api():
+    return prompt_yes_no(
+        "Avoid optional Spotify API calls for this run? (yes/no) [yes]: ",
+        default="yes",
+    )
 
 
 def prompt_for_playlist_scope():
@@ -2609,6 +2576,8 @@ def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reaso
 
 
 def main():
+    global AVOID_OPTIONAL_SPOTIFY_API
+
     reset_run_report()
     print_project_summary()
 
@@ -2616,6 +2585,10 @@ def main():
     update_run_report(requested_count=num_songs)
 
     top_choice = prompt_for_source_choice()
+    if top_choice in {'2', '3'}:
+        AVOID_OPTIONAL_SPOTIFY_API = prompt_for_avoid_optional_spotify_api()
+        update_run_report(avoid_optional_spotify_api=AVOID_OPTIONAL_SPOTIFY_API)
+
     if top_choice == '1':
         source_choice = prompt_for_playlist_scope()
     elif top_choice == '2':
@@ -3041,9 +3014,6 @@ def main():
             )
     else:
         update_run_report(spotify_playlist_status="skipped by user")
-
-    if any(song.get('spotify_url') or song.get('youtube_url') for song in selected_songs):
-        maybe_open_platform_links(selected_songs, link_platform)
 
 
 if __name__ == "__main__":

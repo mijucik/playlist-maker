@@ -34,11 +34,6 @@ RANDOM_SONG_OPTIONS_CACHE = None
 
 AUTO_RESPONSE_PROMPTS = {
     "Do you want to open the file now? (yes/no): ": "no",
-    "Do you want to open Spotify link(s) now? (yes/no): ": "no",
-    "Do you want to open YouTube link(s) now? (yes/no): ": "no",
-    "Do you want to open Spotify/YouTube link(s) now? (yes/no): ": "no",
-    "Which platform should be opened first? (Enter 'spotify' or 'youtube'): ": "spotify",
-    "Open all song links? (yes/no): ": "no",
 }
 
 INTERACTIVE_PROMPTS = {
@@ -138,6 +133,7 @@ WEB_NOISE_PREFIXES = (
     "Max songs to collect before selecting?",
     "Enter one or more words or phrases",
     "Output format (",
+    "Avoid optional Spotify API calls",
     "Choose link output, 1-4",
     "Text to match in playlist names:",
     "Text to match in playlist names:",
@@ -145,11 +141,6 @@ WEB_NOISE_PREFIXES = (
     "Configure random-song.com",
     "Do you want to create a Spotify playlist with these songs?",
     "Do you want to open the file now?",
-    "Do you want to open Spotify link(s) now?",
-    "Do you want to open YouTube link(s) now?",
-    "Do you want to open Spotify/YouTube link(s) now?",
-    "Which platform should be opened first?",
-    "Open all song links?",
     "Do you want to switch to a web-only Surprise Me fallback instead?",
     "Do you want to switch to a no-Spotify-API Surprise Me fallback instead?",
     "Do you want to try YouTube links instead?",
@@ -367,6 +358,7 @@ def build_default_form_data():
         "max_playlist_size": "100",
         "max_songs_pool": "",
         "discovery_mode": "YouTube Music discovery",
+        "avoid_spotify_api": "on",
         "keywords": "",
         "surprise_mode": "Random emotions/genres via public discovery",
         "random_genre": "random",
@@ -418,6 +410,7 @@ def build_initial_cli_answers(form):
 
     elif source == "Public discovery":
         lines.append("2")  # top-level: Public Discovery
+        lines.append("yes" if form.get("avoid_spotify_api") else "no")
         lines.append(form["max_playlists"].strip() or "10")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
@@ -426,6 +419,7 @@ def build_initial_cli_answers(form):
 
     elif source == "Surprise me":
         lines.append("3")  # top-level: Surprise Me
+        lines.append("yes" if form.get("avoid_spotify_api") else "no")
         surprise_choice = {
             "Random emotions/genres via public discovery": "1",
             "random-song.com default": "2",
@@ -957,6 +951,14 @@ def render_page(form, status="Ready."):
       gap: 10px;
       flex-wrap: wrap;
     }}
+    .checkbox-line {{
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+      color: #334538;
+      font-weight: 600;
+    }}
     button {{
       border: 0;
       border-radius: 999px;
@@ -1199,6 +1201,10 @@ def render_page(form, status="Ready."):
         <h3 class="section-title">Public Discovery Settings</h3>
         <p class="section-copy">Optional limits for public discovery.</p>
         <input type="hidden" id="discovery_mode" name="discovery_mode" value="YouTube Music discovery">
+        <label class="checkbox-line">
+          <input type="checkbox" name="avoid_spotify_api"{checked('avoid_spotify_api')}>
+          Avoid optional Spotify API calls
+        </label>
         <button type="button" class="ghost" id="advanced-discovery-toggle">Tweak discovery settings</button>
         <div class="grid hidden" id="advanced-discovery-fields" style="margin-top: 14px;">
           <label for="max_playlists">Max playlists</label>
@@ -1251,7 +1257,7 @@ def render_page(form, status="Ready."):
       </div>
       <div id="link-platform-section">
         <h3 class="section-title">Links</h3>
-        <p class="section-copy">Choose which links to include in the output. YouTube works without Spotify credentials. Spotify links require valid Spotify app credentials for exact track matches.</p>
+        <p class="section-copy">Choose which links to include in the output. YouTube works without Spotify credentials. Exact Spotify links require Spotify credentials and optional Spotify API calls enabled.</p>
         <div class="grid">
           <label for="link_platform">Links to include</label>
           <select id="link_platform" name="link_platform">
