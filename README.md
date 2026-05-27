@@ -19,47 +19,83 @@ Public discovery uses unauthenticated YouTube Music metadata through `ytmusicapi
 
 ## Quick Start — Mac
 
-> No terminal experience required. Everything is handled for you.
-
 1. Download or clone this repository.
 2. Double-click **`start.command`** in Finder.
 
-That's it. The script will:
+The script checks for Python, creates a virtual environment, installs all dependencies, and opens the app in your browser. First run takes about a minute; every run after that is a few seconds.
 
-- check that Python 3 is installed
-- create a self-contained virtual environment inside the project folder (`venv/`)
-- install all dependencies inside that virtual environment automatically
-- open the Playlist Maker web app in your browser
+### If macOS blocks the file
 
-On first run it installs everything, which may take about a minute. Every run after that starts in a few seconds.
+macOS flags scripts downloaded from the internet. There are two ways around it — use whichever feels easier.
 
-> **If macOS says "start.command cannot be opened because it is from an unidentified developer":**
-> Right-click (or Control-click) the file → Open → Open anyway.
-> You only need to do this once.
+**Option A — right-click to open (one time only):**
+
+1. Right-click (or Control-click) `start.command` in Finder.
+2. Choose **Open** from the menu.
+3. Click **Open** again in the dialog that appears.
+
+macOS remembers your choice, so double-clicking works normally from then on.
+
+**Option B — run it from Terminal (always works):**
+
+Open Terminal, paste this, and press Enter:
+
+```bash
+bash ~/Downloads/playlist-maker/start.command
+```
+
+Adjust the path if you saved the folder somewhere else. Running via `bash` bypasses Gatekeeper entirely — no approval dialog needed.
+
+**Option C — remove the quarantine flag (one time only):**
+
+Open Terminal, `cd` into the project folder, then run:
+
+```bash
+chmod +x start.command
+xattr -d com.apple.quarantine start.command
+```
+
+After that, double-clicking works normally.
 
 ---
 
 ## Quick Start — Windows
-
-> No terminal experience required. Everything is handled for you.
 
 1. Install Python 3 from [python.org](https://www.python.org/downloads/windows/) if you haven't already.
    - During install, check **"Add python.exe to PATH"** — this is required.
 2. Download or clone this repository.
 3. Double-click **`start.bat`** in File Explorer.
 
-That's it. The script will:
+The script checks for Python, creates a virtual environment, installs all dependencies, and opens the app in your browser. First run takes about a minute; every run after that is a few seconds.
 
-- check that Python 3 is installed and on your PATH
-- create a self-contained virtual environment inside the project folder (`venv/`)
-- install all dependencies inside that virtual environment automatically
-- open the Playlist Maker web app in your browser
+### If Windows blocks the file
 
-On first run it installs everything, which may take about a minute. Every run after that starts in a few seconds.
+Windows SmartScreen flags batch files downloaded from the internet. There are two ways around it.
 
-> **If Windows shows a "Windows protected your PC" (SmartScreen) warning:**
-> Click **More info** → **Run anyway**.
-> You only need to do this once.
+**Option A — "More info" in the SmartScreen dialog (one time only):**
+
+1. When the blue "Windows protected your PC" dialog appears, click **More info**.
+2. Click **Run anyway**.
+
+Windows remembers your choice, so double-clicking works normally from then on.
+
+**Option B — unblock via file properties (one time only):**
+
+1. Right-click `start.bat` in File Explorer → **Properties**.
+2. At the bottom of the General tab, check the **Unblock** box.
+3. Click **OK**.
+
+After that, double-clicking works without any warning.
+
+**Option C — run it from Command Prompt (always works):**
+
+Open Command Prompt, `cd` into the project folder, then run:
+
+```
+start.bat
+```
+
+Running from Command Prompt bypasses SmartScreen entirely.
 
 ---
 
