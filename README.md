@@ -39,9 +39,33 @@ On first run it installs everything, which may take about a minute. Every run af
 
 ---
 
+## Quick Start — Windows
+
+> No terminal experience required. Everything is handled for you.
+
+1. Install Python 3 from [python.org](https://www.python.org/downloads/windows/) if you haven't already.
+   - During install, check **"Add python.exe to PATH"** — this is required.
+2. Download or clone this repository.
+3. Double-click **`start.bat`** in File Explorer.
+
+That's it. The script will:
+
+- check that Python 3 is installed and on your PATH
+- create a self-contained virtual environment inside the project folder (`venv/`)
+- install all dependencies inside that virtual environment automatically
+- open the Playlist Maker web app in your browser
+
+On first run it installs everything, which may take about a minute. Every run after that starts in a few seconds.
+
+> **If Windows shows a "Windows protected your PC" (SmartScreen) warning:**
+> Click **More info** → **Run anyway**.
+> You only need to do this once.
+
+---
+
 ## Manual Setup
 
-If you prefer the terminal, or you are on Windows or Linux, follow these steps.
+If you prefer the terminal, or you are on Linux, follow these steps.
 
 ### 1. Install Python 3
 
