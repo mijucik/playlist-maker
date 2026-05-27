@@ -299,9 +299,9 @@ def ensure_cli_dependencies():
     ]
 
     if not missing_requirements:
-        return "CLI dependencies already available."
+        return ""
 
-    print("Missing Python packages detected for the picker. Installing them now...")
+    print("Missing Python packages detected. Installing them now...")
     install_command = [sys.executable, "-m", "pip", "install", "-r", str(REPO_DIR / "requirements.txt")]
     result = subprocess.run(
         install_command,
@@ -362,7 +362,7 @@ def build_default_form_data():
         "visibility": "Any visibility",
         "filter_mode": "Rediscover preset",
         "filter_value": "",
-        "max_playlists": "15",
+        "max_playlists": "10",
         "min_playlist_size": "",
         "max_playlist_size": "100",
         "max_songs_pool": "",
@@ -418,7 +418,7 @@ def build_initial_cli_answers(form):
 
     elif source == "Public discovery":
         lines.append("2")  # top-level: Public Discovery
-        lines.append(form["max_playlists"].strip() or "15")
+        lines.append(form["max_playlists"].strip() or "10")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
         lines.append(form.get("max_songs_pool", "").strip())
@@ -433,7 +433,7 @@ def build_initial_cli_answers(form):
         }[form["surprise_mode"]]
         lines.append(surprise_choice)
         if surprise_choice == "1":
-            lines.append(form["max_playlists"].strip() or "15")
+            lines.append(form["max_playlists"].strip() or "10")
             lines.append(form["min_playlist_size"].strip())
             lines.append(form["max_playlist_size"].strip())
             lines.append(form.get("max_songs_pool", "").strip())
@@ -545,7 +545,7 @@ class InteractiveRunSession:
         self.current_prompt = None
         self.status = "Starting..."
         self.status_phase = "Starting"
-        self.status_lines = ["Starting the picker..."]
+        self.status_lines = ["Starting..."]
         self.summary = None
         self.summary_kind = None
         self.report = {}
@@ -606,7 +606,7 @@ class InteractiveRunSession:
                         self.summary_kind = self.build_summary_kind_locked()
                 else:
                     self.status = f"Run exited with code {self.exit_code}."
-                    self.summary = f"The picker stopped before completing. Exit code: {self.exit_code}."
+                    self.summary = f"The run stopped before completing. Exit code: {self.exit_code}."
                     self.summary_kind = "error"
                 self.current_prompt = None
         except Exception as error:
@@ -763,47 +763,19 @@ class InteractiveRunSession:
         notes_parts = []
 
         selected_count = report.get("selected_count")
-        source = report.get("source")
-        keywords = report.get("keywords")
-
-        # Headline: natural sentence for song count + source
+        # Headline: keep the conclusion concise. The selected inputs remain visible above.
         if selected_count is not None:
             n = selected_count
             song_word = "song" if n == 1 else "songs"
             picked = f"<strong>{n} {song_word}</strong>"
-            if source:
-                headline = f"Picked {picked} from {escape(source)}."
-            else:
-                headline = f"Picked {picked}."
+            headline = f"Picked {picked}."
             main_parts.append(f'<p class="summary-headline">{headline}</p>')
-
-        # Discovery details as a natural sentence
-        if report.get("max_playlists") or keywords:
-            disc_parts = []
-            if keywords:
-                if len(keywords) == 1:
-                    kw_str = f'"{escape(keywords[0])}"'
-                else:
-                    kw_str = ", ".join(f'"{escape(k)}"' for k in keywords[:-1])
-                    kw_str += f', and "{escape(keywords[-1])}"'
-                disc_parts.append(f"searched for {kw_str}")
-            if report.get("max_playlists"):
-                max_pl = escape(str(report["max_playlists"]))
-                min_size = report.get("min_playlist_size")
-                max_size = report.get("max_playlist_size")
-                pl_part = f"across up to {max_pl} playlists"
-                if min_size or max_size:
-                    pl_part += f" ({escape(str(min_size or 'any'))}–{escape(str(max_size or 'any'))} songs each)"
-                disc_parts.append(pl_part)
-            if disc_parts:
-                sentence = "It " + " ".join(disc_parts) + "."
-                main_parts.append(f"<p>{sentence}</p>")
 
         # Output
         if self.generated_file and self.generated_file.exists():
             kind = self.generated_file.suffix.lower().lstrip(".").upper() or "file"
             filename = escape(report.get("artifact_name") or self.generated_file.name)
-            main_parts.append(f'<p>Saved as a {kind} file: <strong>{filename}</strong></p>')
+            main_parts.append(f'<p>{kind} file <strong>{filename}</strong> was generated.</p>')
         elif report.get("output_format") == "terminal" or self.display_output.strip():
             main_parts.append("<p>Songs are printed in the browser above.</p>")
 
@@ -836,7 +808,7 @@ class InteractiveRunSession:
             if any(w in status_lower for w in ("fail", "error", "could not", "unable")):
                 notes_parts.append(f"<p>Spotify playlist{name_part} couldn't be created: {escape(playlist_status)}</p>")
             elif "skip" in status_lower:
-                notes_parts.append(f"<p>Spotify playlist creation was skipped.</p>")
+                notes_parts.append(f"<p>No Spotify playlist was created.</p>")
             else:
                 main_parts.append(f"<p>Saved to Spotify playlist{name_part}: {escape(playlist_status)}</p>")
 
@@ -939,7 +911,7 @@ def render_page(form, status="Ready."):
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Spotify Playlist Picker Web</title>
+  <title>Playlist Maker</title>
   <style>
     body {{
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
@@ -1128,9 +1100,7 @@ def render_page(form, status="Ready."):
 </head>
 <body>
   <div class="page">
-    <h1>Spotify Playlist Picker Web</h1>
-    <p class="hint">Run the picker in a live browser log, answer follow-up prompts in place, and preview generated HTML output directly below.</p>
-    <p class="hint">{escape(RUNTIME_SETUP_MESSAGE)}</p>
+    <h1>Playlist Maker</h1>
 
     <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
@@ -1310,7 +1280,7 @@ def render_page(form, status="Ready."):
       </div>
 
       <div class="row" style="margin-top: 16px;">
-        <button type="submit" id="run-button">Run Picker</button>
+        <button type="submit" id="run-button">Make Playlist</button>
         <button type="button" class="ghost hidden" id="cancel-button">Cancel Run</button>
       </div>
     </form>
@@ -1460,7 +1430,7 @@ def render_page(form, status="Ready."):
         return;
       }}
 
-      const lines = feed.lines && feed.lines.length ? feed.lines : ["Starting the picker..."];
+      const lines = feed.lines && feed.lines.length ? feed.lines : ["Starting..."];
       const phase = feed.phase || "Working";
       statusFeed.innerHTML = "";
       const phaseElement = document.createElement("div");
@@ -1624,7 +1594,7 @@ def render_page(form, status="Ready."):
       terminalOutput.classList.add("hidden");
       statusFeed.classList.remove("hidden");
       summaryCard.classList.add("hidden");
-      statusFeed.innerHTML = '<div class="status-phase">Starting</div><div class="status-line"><span class="pulse"></span><span>Starting the picker...</span></div>';
+      statusFeed.innerHTML = '<div class="status-phase">Starting</div><div class="status-line"><span class="pulse"></span><span>Starting...</span></div>';
       renderArtifact({{}});
       renderPrompt({{ prompt: null }});
       statusText.textContent = "Run started...";
@@ -1855,7 +1825,7 @@ if __name__ == "__main__":
         RUNTIME_SETUP_MESSAGE = str(error)
     server, port = start_server()
     url = f"http://127.0.0.1:{port}"
-    print(f"Spotify Playlist Picker Web running at {url}")
+    print(f"Playlist Maker running at {url}")
     print("Press Ctrl+C to stop.")
     webbrowser.open(url)
     try:

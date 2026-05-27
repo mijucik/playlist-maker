@@ -1,6 +1,6 @@
-# Spotify Playlist Picker
+# Playlist Maker
 
-This is a command-line tool for finding random songs and building Spotify playlists.
+Playlist Maker finds random songs and can build Spotify playlists from them.
 
 It can:
 
@@ -74,15 +74,15 @@ sudo dnf install -y git python3 python3-pip
 ### 2. Clone the repository
 
 ```bash
-git clone https://github.com/mijucik/spotify-playlist-picker.git
-cd spotify-playlist-picker
+git clone https://github.com/mijucik/playlist-maker.git
+cd playlist-maker
 ```
 
 On Windows PowerShell:
 
 ```powershell
-git clone https://github.com/mijucik/spotify-playlist-picker.git
-cd spotify-playlist-picker
+git clone https://github.com/mijucik/playlist-maker.git
+cd playlist-maker
 ```
 
 ### 3. Install Python dependencies
@@ -204,14 +204,14 @@ The first time you run the script, Spotify should open a browser window and ask 
 Once dependencies are installed, the normal command is:
 
 ```bash
-cd spotify-playlist-picker
+cd playlist-maker
 python3 main.py
 ```
 
 On Windows PowerShell:
 
 ```powershell
-cd spotify-playlist-picker
+cd playlist-maker
 python main.py
 ```
 
@@ -239,15 +239,11 @@ python3 main.py
 
 Useful flows:
 
-- `2` filters your own playlists by `Rediscover`, `contains`, or `regex`
-- `1`, `2`, `3`, and `4` can be limited to `any`, `public only`, or `private only` playlists
-- `5` searches YouTube Music by keywords
-- public discovery searches YouTube Music playlists first, then falls back to YouTube Music song search if needed
-- `5` and the public `Surprise me` mode both support minimum and maximum playlist-size filters
-- `6` includes public-discovery surprise mode plus two `random-song.com` modes
-- public discovery can limit playlists to a size range with both minimum and maximum song counts
-- after songs are chosen, the app automatically adds `Spotify` search links and `YouTube` links
-- public discovery can still generate terminal, text, or HTML output even if you do not log into Spotify
+- `My Spotify playlists` pulls from your own playlists and can filter by visibility, playlist name, text, or regex.
+- `Public discovery` searches YouTube Music by keywords and can limit playlist sizes.
+- `Surprise me` can use random public-discovery keywords or `random-song.com`.
+- After songs are chosen, the app can include Spotify and/or YouTube links.
+- Public discovery can still generate terminal, text, or HTML output even if you do not log into Spotify.
 
 ## Notes
 

@@ -1810,7 +1810,7 @@ def fetch_songs_from_spotify_genre_recommendations(keywords, max_songs=100):
 
 def fetch_youtube_music_public_discovery_songs(
     keywords,
-    max_playlists=15,
+    max_playlists=10,
     max_songs=500,
     max_tracks_per_playlist=35,
     min_playlist_size=None,
@@ -2021,7 +2021,7 @@ def describe_public_discovery_mode(discovery_mode):
 # Function to fetch songs from public music sources by keywords/phrases without caching
 def fetch_songs_from_public_playlists_by_keywords(
     keywords,
-    max_playlists=15,
+    max_playlists=10,
     max_songs=500,
     max_tracks_per_playlist=35,
     min_playlist_size=None,
@@ -2287,9 +2287,9 @@ def prompt_for_playlist_scope():
 
 def prompt_for_max_playlists():
     while True:
-        raw = input("Max playlists to search [15]: ").strip()
+        raw = input("Max playlists to search [10]: ").strip()
         if not raw:
-            return 15
+            return 10
         try:
             n = int(raw)
         except ValueError:
@@ -2369,7 +2369,7 @@ if EMOTIONS_GENRES:
 
 
 def print_project_summary():
-    print_cli_section("Spotify Playlist Picker")
+    print_cli_section("Playlist Maker")
     print("Randomly selects songs from your playlists or public discovery.")
 
 
@@ -2610,7 +2610,7 @@ def main():
 
             # For option 5, we won't use cache
             cache_file = None
-            source_description = f"Public Discovery by Keywords/Phrases ({describe_public_discovery_mode(public_discovery_mode)})"
+            source_description = "Public Discovery"
             keywords = prompt_for_keywords()
             update_run_report(
                 source=source_description,
@@ -2682,8 +2682,7 @@ def main():
             public_discovery_mode = effective_discovery_mode
             if source_choice == '5':
                 source_description = (
-                    f"Public Discovery by Keywords/Phrases "
-                    f"({describe_public_discovery_mode(public_discovery_mode)})"
+                    "Public Discovery"
                 )
             else:
                 source_description = (
@@ -2806,15 +2805,10 @@ def main():
         print("Skipping file generation.")
     elif file_format in ['txt', 'html']:
         emit_web_status("output", f"Writing {file_format.upper()} file...", reset=True)
-        # Get current date and time
         now = datetime.now()
         date_str = now.strftime("%Y.%m.%d at %Hhr%M")
-
-        # Sanitize the source description for filenames
-        safe_source_description = sanitize_filename(source_description)
-
-        # Create filename with date and source description
-        filename = f"{date_str} - {safe_source_description}.{file_format}"
+        filename_date = now.strftime("%Y-%m-%d_%H-%M-%S")
+        filename = f"playlist-maker-{filename_date}.{file_format}"
 
         # Create 'generated' folder if it doesn't exist
         output_folder = 'generated'
@@ -2882,7 +2876,7 @@ def main():
 <html>
 <head>
     <meta charset="UTF-8">
-    <title>Your Selected Songs - {readable_date}</title>
+    <title>Playlist Maker - {readable_date}</title>
     <style>
         body {{
             font-family: Arial, sans-serif;
@@ -2912,7 +2906,7 @@ def main():
     </style>
 </head>
 <body>
-    <h1>Your Selected Songs</h1>
+    <h1>Playlist Maker</h1>
     <p class="source">Source: {html.escape(source_description)}</p>
 """
                 if source_choice == '4':
