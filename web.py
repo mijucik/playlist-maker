@@ -240,6 +240,7 @@ def build_initial_cli_answers(form):
             "Spotify public playlists": "2",
             "YouTube playlists": "3",
             "Track search only": "4",
+            "No Spotify API": "5",
         }[form["discovery_mode"]])
         lines.append(form["keywords"].strip())
 
@@ -260,6 +261,7 @@ def build_initial_cli_answers(form):
                 "Spotify public playlists": "2",
                 "YouTube playlists": "3",
                 "Track search only": "4",
+                "No Spotify API": "5",
             }[form["discovery_mode"]])
         elif surprise_choice == "3":
             lines.append(form["random_genre"].strip() or "random")
@@ -286,8 +288,37 @@ def build_initial_cli_answers(form):
     return "\n".join(lines) + "\n"
 
 
+def form_requires_spotify_credentials(form):
+    source = form["source"]
+    discovery_mode = form["discovery_mode"]
+    surprise_mode = form["surprise_mode"]
+    link_choice = form["link_choice"]
+
+    if source in {
+        "All playlists",
+        "Filter your playlists by name",
+        "Your own playlists",
+        "Random saved playlists",
+    }:
+        return True
+
+    if source == "Public discovery" and discovery_mode != "No Spotify API":
+        return True
+
+    if source == "Surprise me":
+        if surprise_mode == "Random emotions/genres via public discovery" and discovery_mode != "No Spotify API":
+            return True
+        if surprise_mode in {"random-song.com default", "random-song.com custom"}:
+            return False
+
+    if link_choice in {"Spotify links", "Both Spotify and YouTube"}:
+        return True
+
+    return False
+
+
 def validate_form(form):
-    if not form["client_id"].strip() or not form["client_secret"].strip():
+    if form_requires_spotify_credentials(form) and (not form["client_id"].strip() or not form["client_secret"].strip()):
         return "Client ID and Client Secret are required."
 
     num_songs_value = form["num_songs"].strip().lower()
@@ -679,6 +710,7 @@ def render_page(form, status="Ready."):
 
     <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
+      <p class="section-copy">These are required for personal-playlist features, Spotify link lookup, and playlist creation. They are optional for the public `No Spotify API` discovery mode.</p>
       <div class="grid">
         <label for="client_id">Client ID</label>
         <input id="client_id" name="client_id" value="{escape(form['client_id'])}">
@@ -760,7 +792,7 @@ def render_page(form, status="Ready."):
 
       <div id="public-discovery-options-section">
         <h3 class="section-title">Public Discovery Settings</h3>
-        <p class="section-copy">These settings control how many public playlists are considered and what size range they must fall into.</p>
+        <p class="section-copy">These settings control how many public playlists are considered and what size range they must fall into. Use `No Spotify API` when you want a public run that can still finish without Spotify auth.</p>
         <div class="grid">
           <label for="max_playlists">Max playlists</label>
           <input id="max_playlists" name="max_playlists" value="{escape(form['max_playlists'])}">
@@ -777,6 +809,7 @@ def render_page(form, status="Ready."):
             <option{option(form['discovery_mode'], 'Spotify public playlists')}>Spotify public playlists</option>
             <option{option(form['discovery_mode'], 'YouTube playlists')}>YouTube playlists</option>
             <option{option(form['discovery_mode'], 'Track search only')}>Track search only</option>
+            <option{option(form['discovery_mode'], 'No Spotify API')}>No Spotify API</option>
           </select>
         </div>
       </div>
@@ -1250,9 +1283,15 @@ class WebHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         if self.path == "/save":
             form = self._read_form()
-            validation_error = validate_form({**form, "num_songs": "1", "source": "All playlists"})
-            if validation_error and "Client ID" in validation_error:
-                self._send_html(render_page(form, status=validation_error))
+            client_id = form["client_id"].strip()
+            client_secret = form["client_secret"].strip()
+            if bool(client_id) != bool(client_secret):
+                self._send_html(
+                    render_page(
+                        form,
+                        status="Save both Client ID and Client Secret together, or leave both blank.",
+                    )
+                )
                 return
 
             save_credentials_from_form(form)

@@ -41,6 +41,17 @@ SPOTIFY_MIN_INTERVAL_SECONDS = 0.2
 SPOTIFY_MAX_RETRIES = 4
 SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS = 120
 CURRENT_USER_PROFILE = None
+SPOTIFY_CLIENT = None
+SPOTIFY_API_UNAVAILABLE_REASON = None
+SPOTIFY_UNAVAILABLE_NOTICES = set()
+
+
+class RunAborted(RuntimeError):
+    """Raised when the current run should stop cleanly."""
+
+
+class SpotifyApiUnavailableError(RuntimeError):
+    """Raised when Spotify API access is unavailable for this run."""
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -122,11 +133,7 @@ class RateLimitedSpotifyClient:
                         retry_after_seconds = min(2 ** attempt, 10)
 
                     if retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
-                        print(
-                            "Stopping this run because Spotify asked for a retry window "
-                            f"of {retry_after_seconds} seconds, which is over 2 minutes."
-                        )
-                        raise SystemExit(
+                        raise RunAborted(
                             "Spotify rate-limited this run for too long to auto-retry "
                             f"({retry_after_seconds} seconds, over the 2 minute limit). Exiting early to avoid hammering the API."
                         )
@@ -143,7 +150,7 @@ class RateLimitedSpotifyClient:
                         f"Spotify kept returning HTTP 429 after {attempt} attempt(s). "
                         "Exiting early to avoid hammering the API."
                     )
-                    raise SystemExit(retry_summary)
+                    raise RunAborted(retry_summary)
 
                 if http_status in {500, 502, 503} and attempt <= SPOTIFY_MAX_RETRIES:
                     backoff_seconds = min(2 ** attempt, 10)
@@ -186,14 +193,18 @@ def extract_retry_after_seconds(error):
 def abort_if_unreasonable_rate_limit_error(error):
     retry_after_seconds = extract_retry_after_seconds(error)
     if retry_after_seconds is not None and retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
-        print(
-            "Stopping this run because Spotify asked for a retry window "
-            f"of {retry_after_seconds} seconds, which is over 2 minutes."
-        )
-        raise SystemExit(
+        raise RunAborted(
             "Spotify asked this run to wait too long before retrying "
             f"({retry_after_seconds} seconds, over the 2 minute limit). Exiting early."
         )
+
+
+def print_spotify_unavailable_notice(context, message):
+    notice_key = (context, message)
+    if notice_key in SPOTIFY_UNAVAILABLE_NOTICES:
+        return
+    SPOTIFY_UNAVAILABLE_NOTICES.add(notice_key)
+    print(f"Spotify API unavailable for {context}: {message}")
 
 
 def ensure_private_directory(path):
@@ -324,21 +335,17 @@ def decorate_source_for_visibility(cache_file, fetcher, description, visibility_
     )
 
 
-def create_spotify_client():
-    global CURRENT_USER_PROFILE
-    print("Spotify credentials are read from environment variables when available.")
-    print("If they are not set, this script will use saved local app settings when available or ask for them.")
-
+def resolve_spotify_app_credentials(prompt_if_missing=True):
     saved_spotify_config = load_local_config().get("spotify_app", {})
     client_id = os.getenv("SPOTIPY_CLIENT_ID") or saved_spotify_config.get("client_id")
     client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or saved_spotify_config.get("client_secret")
     redirect_uri = os.getenv("SPOTIPY_REDIRECT_URI") or saved_spotify_config.get("redirect_uri")
 
-    if not client_id:
+    if not client_id and prompt_if_missing:
         client_id = prompt_for_env_var("SPOTIPY_CLIENT_ID", "Enter your Spotify Client ID")
-    if not client_secret:
+    if not client_secret and prompt_if_missing:
         client_secret = prompt_for_env_var("SPOTIPY_CLIENT_SECRET", "Enter your Spotify Client Secret", secret=True)
-    if not redirect_uri:
+    if not redirect_uri and prompt_if_missing:
         redirect_uri = prompt_for_env_var(
             "SPOTIPY_REDIRECT_URI",
             "Enter your Spotify Redirect URI",
@@ -346,8 +353,26 @@ def create_spotify_client():
         )
 
     if not client_id or not client_secret:
-        print("Error: Spotify client ID and client secret are required.")
-        sys.exit(1)
+        raise SpotifyApiUnavailableError(
+            "Spotify client ID and client secret are not configured for this run."
+        )
+
+    return client_id, client_secret, redirect_uri or DEFAULT_REDIRECT_URI
+
+
+def spotify_app_credentials_configured():
+    saved_spotify_config = load_local_config().get("spotify_app", {})
+    client_id = os.getenv("SPOTIPY_CLIENT_ID") or saved_spotify_config.get("client_id")
+    client_secret = os.getenv("SPOTIPY_CLIENT_SECRET") or saved_spotify_config.get("client_secret")
+    return bool(client_id and client_secret)
+
+
+def create_spotify_client(prompt_if_missing=True):
+    global CURRENT_USER_PROFILE
+    print("Spotify credentials are read from environment variables when available.")
+    print("If they are not set, this script will use saved local app settings when available or ask for them.")
+
+    client_id, client_secret, redirect_uri = resolve_spotify_app_credentials(prompt_if_missing=prompt_if_missing)
 
     if not os.getenv("SPOTIPY_CLIENT_ID") and not os.getenv("SPOTIPY_CLIENT_SECRET"):
         save_spotify_app_config(client_id, client_secret, redirect_uri)
@@ -389,11 +414,14 @@ def create_spotify_client():
         try:
             user = spotify_client.current_user()
         except (spotipy.exceptions.SpotifyException, spotipy.exceptions.SpotifyOauthError) as retry_error:
-            print(f"Authentication failed after clearing the cache: {retry_error}")
-            sys.exit(1)
+            if isinstance(retry_error, spotipy.exceptions.SpotifyException):
+                abort_if_unreasonable_rate_limit_error(retry_error)
+            raise SpotifyApiUnavailableError(
+                f"Authentication failed after clearing the cache: {retry_error}"
+            ) from retry_error
     except spotipy.exceptions.SpotifyException as error:
-        print(f"Authentication failed: {error}")
-        sys.exit(1)
+        abort_if_unreasonable_rate_limit_error(error)
+        raise SpotifyApiUnavailableError(f"Authentication failed: {error}") from error
 
     display_name = user.get("display_name") or user.get("id") or "unknown user"
     CURRENT_USER_PROFILE = user
@@ -401,7 +429,41 @@ def create_spotify_client():
     return spotify_client
 
 
-sp = create_spotify_client()
+def get_spotify_client(required=True, prompt_if_missing=None, context="this step"):
+    global SPOTIFY_CLIENT, SPOTIFY_API_UNAVAILABLE_REASON
+
+    if SPOTIFY_CLIENT is not None:
+        return SPOTIFY_CLIENT
+
+    if prompt_if_missing is None:
+        prompt_if_missing = required
+
+    if SPOTIFY_API_UNAVAILABLE_REASON and not required:
+        return None
+
+    try:
+        SPOTIFY_CLIENT = create_spotify_client(prompt_if_missing=prompt_if_missing)
+        SPOTIFY_API_UNAVAILABLE_REASON = None
+        return SPOTIFY_CLIENT
+    except (RunAborted, SpotifyApiUnavailableError) as error:
+        SPOTIFY_API_UNAVAILABLE_REASON = str(error)
+        if required:
+            raise
+        print_spotify_unavailable_notice(context, SPOTIFY_API_UNAVAILABLE_REASON)
+        return None
+
+
+def spotify_api_is_available(context="this step"):
+    return get_spotify_client(required=False, prompt_if_missing=False, context=context) is not None
+
+
+class LazySpotifyClient:
+    def __getattr__(self, name):
+        client = get_spotify_client(required=True, prompt_if_missing=True, context="Spotify API access")
+        return getattr(client, name)
+
+
+sp = LazySpotifyClient()
 
 
 # Function to sanitize strings for filenames
@@ -1000,11 +1062,14 @@ def find_spotify_track_for_song(song):
 
 def attach_platform_links(selected_songs, link_platform):
     if link_platform in {'spotify', 'both'}:
-        print("Looking up Spotify links for the selected songs...")
-        for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
-            spotify_url, found_exact_track = find_spotify_url(song)
-            song['spotify_url'] = spotify_url
-            song['spotify_found_exact_track'] = found_exact_track
+        if spotify_app_credentials_configured() or any(song.get('spotify_url') for song in selected_songs):
+            print("Looking up Spotify links for the selected songs...")
+            for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
+                spotify_url, found_exact_track = find_spotify_url(song)
+                song['spotify_url'] = spotify_url
+                song['spotify_found_exact_track'] = found_exact_track
+        else:
+            print("Skipping Spotify link lookup because no Spotify app credentials are configured for this run.")
 
     if link_platform in {'youtube', 'both'}:
         print("Looking up YouTube links for the selected songs...")
@@ -1094,6 +1159,14 @@ def search_public_playlists_by_keywords(
     max_playlist_size=None,
     candidate_multiplier=5,
 ):
+    spotify_client = get_spotify_client(
+        required=False,
+        prompt_if_missing=False,
+        context="Spotify public playlist discovery",
+    )
+    if spotify_client is None:
+        return []
+
     playlists = []
     target_candidate_count = max(max_playlists * candidate_multiplier, max_playlists)
 
@@ -1114,7 +1187,11 @@ def search_public_playlists_by_keywords(
     # Now rotate through combinations of keywords
     for keyword_combo in keyword_combinations:
         print(f"Searching for playlists with the combination: {keyword_combo}")
-        results = sp.search(q=keyword_combo, type='playlist', limit=min(target_candidate_count, SPOTIFY_PLAYLIST_SEARCH_LIMIT))
+        results = spotify_client.search(
+            q=keyword_combo,
+            type='playlist',
+            limit=min(target_candidate_count, SPOTIFY_PLAYLIST_SEARCH_LIMIT),
+        )
         playlist_results = results.get('playlists', {})
 
         if 'items' in playlist_results:
@@ -1126,7 +1203,7 @@ def search_public_playlists_by_keywords(
 
         # Handle pagination for more playlists
         while playlist_results.get('next') and len(playlists) < target_candidate_count:
-            results = sp.next(playlist_results)
+            results = spotify_client.next(playlist_results)
             playlist_results = results
             if 'items' in results:
                 playlists.extend(
@@ -1282,6 +1359,11 @@ def fetch_songs_from_spotify_public_playlist_pages(
     max_playlist_size=None,
 ):
     global SPOTIFY_PUBLIC_TRACK_API_BLOCKED
+    spotify_client = get_spotify_client(
+        required=False,
+        prompt_if_missing=False,
+        context="Spotify public track metadata enrichment",
+    )
     song_list = []
     playlists_used = 0
     for playlist in playlists:
@@ -1309,10 +1391,10 @@ def fetch_songs_from_spotify_public_playlist_pages(
 
         limited_track_ids = track_ids[:max_tracks_per_playlist]
         playlist_songs = []
-        used_page_fallback = SPOTIFY_PUBLIC_TRACK_API_BLOCKED
+        used_page_fallback = SPOTIFY_PUBLIC_TRACK_API_BLOCKED or spotify_client is None
         for start in range(0, len(limited_track_ids), 50):
             batch_ids = limited_track_ids[start:start + 50]
-            if SPOTIFY_PUBLIC_TRACK_API_BLOCKED:
+            if SPOTIFY_PUBLIC_TRACK_API_BLOCKED or spotify_client is None:
                 for track_id in batch_ids:
                     track_song = fetch_spotify_track_metadata_from_page(track_id)
                     if track_song:
@@ -1320,7 +1402,7 @@ def fetch_songs_from_spotify_public_playlist_pages(
                 continue
 
             try:
-                tracks_response = sp.tracks(batch_ids)
+                tracks_response = spotify_client.tracks(batch_ids)
             except spotipy.exceptions.SpotifyException as error:
                 abort_if_unreasonable_rate_limit_error(error)
                 print(f"Could not resolve Spotify tracks for playlist '{playlist_name}' via API: {error}")
@@ -1502,6 +1584,7 @@ def fetch_songs_from_youtube_public_playlists(
     max_tracks_per_playlist,
     min_playlist_size=None,
     max_playlist_size=None,
+    require_spotify_verification=True,
 ):
     song_list = []
     playlists_used = 0
@@ -1527,25 +1610,25 @@ def fetch_songs_from_youtube_public_playlists(
             continue
 
         seen_video_ids = set()
-        unique_titles = []
+        unique_entries = []
         for video_id, raw_title in matches:
             if video_id in seen_video_ids:
                 continue
             seen_video_ids.add(video_id)
-            unique_titles.append(raw_title)
+            unique_entries.append((video_id, raw_title))
 
-        if min_playlist_size is not None and len(unique_titles) < min_playlist_size:
-            print(f"Skipping YouTube playlist '{playlist_id}' because it has only {len(unique_titles)} songs/videos.")
+        if min_playlist_size is not None and len(unique_entries) < min_playlist_size:
+            print(f"Skipping YouTube playlist '{playlist_id}' because it has only {len(unique_entries)} songs/videos.")
             continue
 
-        if max_playlist_size is not None and len(unique_titles) > max_playlist_size:
-            print(f"Skipping YouTube playlist '{playlist_id}' because it has {len(unique_titles)} songs/videos.")
+        if max_playlist_size is not None and len(unique_entries) > max_playlist_size:
+            print(f"Skipping YouTube playlist '{playlist_id}' because it has {len(unique_entries)} songs/videos.")
             continue
 
         playlist_song_count = 0
         skipped_non_song_count = 0
         skipped_unverified_count = 0
-        for raw_title in unique_titles:
+        for video_id, raw_title in unique_entries:
             if playlist_song_count >= max_tracks_per_playlist:
                 break
 
@@ -1554,17 +1637,27 @@ def fetch_songs_from_youtube_public_playlists(
                 skipped_non_song_count += 1
                 continue
 
-            verified_song = verify_song_on_spotify(song)
-            if not verified_song:
-                skipped_unverified_count += 1
-                continue
+            if require_spotify_verification:
+                verified_song = verify_song_on_spotify(song)
+                if not verified_song:
+                    skipped_unverified_count += 1
+                    continue
+            else:
+                verified_song = dict(song)
 
+            verified_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
+            verified_song['youtube_found_exact_video'] = True
             song_list.append(verified_song)
             playlist_song_count += 1
 
         if playlist_song_count:
+            verification_note = (
+                "cross-platform song candidate(s)"
+                if require_spotify_verification
+                else "likely song candidate(s) without Spotify verification"
+            )
             print(
-                f"Recovered {playlist_song_count} cross-platform song candidate(s) from YouTube playlist '{playlist_id}'"
+                f"Recovered {playlist_song_count} {verification_note} from YouTube playlist '{playlist_id}'"
                 f", skipped {skipped_non_song_count} likely non-song video(s),"
                 f" and skipped {skipped_unverified_count} title(s) that did not resolve on Spotify."
             )
@@ -1600,13 +1693,21 @@ def build_spotify_search_queries(song):
 
 
 def resolve_song_on_spotify(song, suppress_errors=False):
+    spotify_client = get_spotify_client(
+        required=False,
+        prompt_if_missing=False,
+        context="Spotify song matching",
+    )
+    if spotify_client is None:
+        return None
+
     song_key = normalize_song_key(song.get('title', ''), song.get('artists', ''))
     if song_key in SPOTIFY_MATCH_CACHE:
         return SPOTIFY_MATCH_CACHE[song_key]
 
     for query, is_exact_query in build_spotify_search_queries(song):
         try:
-            result = sp.search(q=query, type='track', limit=5)
+            result = spotify_client.search(q=query, type='track', limit=5)
         except spotipy.exceptions.SpotifyException as error:
             abort_if_unreasonable_rate_limit_error(error)
             if not suppress_errors:
@@ -1650,6 +1751,14 @@ def verify_song_on_spotify(song):
 
 
 def search_spotify_tracks_by_keywords(keywords, max_songs):
+    spotify_client = get_spotify_client(
+        required=False,
+        prompt_if_missing=False,
+        context="Spotify track search",
+    )
+    if spotify_client is None:
+        return []
+
     song_list = []
     seen_song_keys = set()
     keyword_combinations = build_keyword_combinations(keywords)
@@ -1657,7 +1766,7 @@ def search_spotify_tracks_by_keywords(keywords, max_songs):
     for keyword_combo in keyword_combinations:
         print(f"Searching Spotify tracks with: {keyword_combo}")
         try:
-            results = sp.search(q=keyword_combo, type='track', limit=min(max_songs, 10))
+            results = spotify_client.search(q=keyword_combo, type='track', limit=min(max_songs, 10))
         except spotipy.exceptions.SpotifyException as error:
             abort_if_unreasonable_rate_limit_error(error)
             print(f"Error searching tracks for '{keyword_combo}': {error}")
@@ -1685,7 +1794,7 @@ def search_spotify_tracks_by_keywords(keywords, max_songs):
     return song_list
 
 
-def search_youtube_videos_by_keywords(keywords, max_songs):
+def search_youtube_videos_by_keywords(keywords, max_songs, require_spotify_verification=True):
     song_list = []
     seen_song_keys = set()
     keyword_combinations = build_keyword_combinations(keywords)
@@ -1710,21 +1819,31 @@ def search_youtube_videos_by_keywords(keywords, max_songs):
                 skipped_non_song_count += 1
                 continue
 
-            verified_song = verify_song_on_spotify(song)
-            if not verified_song:
-                skipped_unverified_count += 1
-                continue
+            accepted_song = None
+            if require_spotify_verification:
+                verified_song = verify_song_on_spotify(song)
+                if not verified_song:
+                    skipped_unverified_count += 1
+                    continue
+                accepted_song = verified_song
+            else:
+                accepted_song = dict(song)
 
-            verified_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
-            verified_song['youtube_found_exact_video'] = True
-            if merge_song_list_with_seen(song_list, seen_song_keys, verified_song):
+            accepted_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
+            accepted_song['youtube_found_exact_video'] = True
+            if merge_song_list_with_seen(song_list, seen_song_keys, accepted_song):
                 video_count += 1
 
             if video_count >= YOUTUBE_SEARCH_RESULT_LIMIT or len(song_list) >= max_songs:
                 break
 
+        verification_note = (
+            "cross-platform song candidate(s)"
+            if require_spotify_verification
+            else "likely song candidate(s) without Spotify verification"
+        )
         print(
-            f"Recovered {video_count} cross-platform song candidate(s) from YouTube search for '{keyword_combo}'"
+            f"Recovered {video_count} {verification_note} from YouTube search for '{keyword_combo}'"
             f", skipped {skipped_non_song_count} likely non-song result(s),"
             f" and skipped {skipped_unverified_count} result(s) that did not resolve on Spotify."
         )
@@ -1735,12 +1854,23 @@ def search_youtube_videos_by_keywords(keywords, max_songs):
     return song_list
 
 
-def search_tracks_by_keywords(keywords, max_songs, label="Searching Spotify and YouTube tracks directly..."):
+def search_tracks_by_keywords(
+    keywords,
+    max_songs,
+    label="Searching Spotify and YouTube tracks directly...",
+    include_spotify=True,
+    require_spotify_verification=True,
+):
     print(label)
     song_map = {}
-    spotify_songs = search_spotify_tracks_by_keywords(keywords, max_songs)
-    merge_song_candidates(song_map, spotify_songs, "spotify-track-search")
-    youtube_songs = search_youtube_videos_by_keywords(keywords, max_songs)
+    if include_spotify:
+        spotify_songs = search_spotify_tracks_by_keywords(keywords, max_songs)
+        merge_song_candidates(song_map, spotify_songs, "spotify-track-search")
+    youtube_songs = search_youtube_videos_by_keywords(
+        keywords,
+        max_songs,
+        require_spotify_verification=require_spotify_verification,
+    )
     merge_song_candidates(song_map, youtube_songs, "youtube-track-search")
     song_list = list(song_map.values())
     random.shuffle(song_list)
@@ -1754,13 +1884,15 @@ def prompt_for_public_discovery_mode():
     print("2. Spotify public playlists only")
     print("3. YouTube playlists only")
     print("4. Track search only (Spotify + YouTube)")
-    discovery_choice = input("Enter 1, 2, 3, or 4 [1]: ").strip() or '1'
+    print("5. No Spotify API: YouTube playlists + YouTube track search")
+    discovery_choice = input("Enter 1, 2, 3, 4, or 5 [1]: ").strip() or '1'
 
     mode_map = {
         '1': 'hybrid',
         '2': 'spotify-playlists-web',
         '3': 'youtube-playlists-web',
         '4': 'spotify-track-search',
+        '5': 'web-no-spotify-api',
     }
     discovery_mode = mode_map.get(discovery_choice)
     if not discovery_mode:
@@ -1775,6 +1907,7 @@ def describe_public_discovery_mode(discovery_mode):
         'spotify-playlists-web': 'Spotify public playlists',
         'youtube-playlists-web': 'YouTube playlists',
         'spotify-track-search': 'Spotify and YouTube track search',
+        'web-no-spotify-api': 'YouTube public discovery without Spotify API',
     }.get(discovery_mode, 'Hybrid public discovery')
 
 
@@ -1790,8 +1923,18 @@ def fetch_songs_from_public_playlists_by_keywords(
 ):
     print("Starting to fetch songs from public music sources by keywords/phrases...")
     song_map = {}
+    spotify_api_available = False
+    spotify_api_requested = discovery_mode != 'web-no-spotify-api'
+    if spotify_api_requested and spotify_app_credentials_configured():
+        spotify_api_available = spotify_api_is_available("public discovery")
+    elif spotify_api_requested and not spotify_app_credentials_configured():
+        print("No Spotify app credentials are configured for this public discovery run.")
 
-    if discovery_mode in {'hybrid', 'spotify-playlists-web'}:
+    if spotify_api_requested and not spotify_api_available:
+        print("Spotify API is unavailable for this public discovery run.")
+        print("Continuing with sources that do not require Spotify app API access.")
+
+    if discovery_mode in {'hybrid', 'spotify-playlists-web'} and spotify_api_available:
         spotify_public_playlists = search_public_playlists_by_keywords(
             keywords,
             max_playlists,
@@ -1807,8 +1950,10 @@ def fetch_songs_from_public_playlists_by_keywords(
             max_playlist_size=max_playlist_size,
         )
         merge_song_candidates(song_map, spotify_playlist_songs, "spotify-public-playlists")
+    elif discovery_mode == 'spotify-playlists-web':
+        print("Spotify public playlist discovery is not available without Spotify API access for this run.")
 
-    if discovery_mode in {'hybrid', 'youtube-playlists-web'}:
+    if discovery_mode in {'hybrid', 'youtube-playlists-web', 'web-no-spotify-api'}:
         youtube_playlist_ids = search_youtube_playlist_ids_by_keywords(keywords, max_playlists)
         youtube_playlist_songs = fetch_songs_from_youtube_public_playlists(
             youtube_playlist_ids,
@@ -1816,6 +1961,7 @@ def fetch_songs_from_public_playlists_by_keywords(
             max_tracks_per_playlist=max_tracks_per_playlist,
             min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
+            require_spotify_verification=spotify_api_available and discovery_mode != 'web-no-spotify-api',
         )
         merge_song_candidates(song_map, youtube_playlist_songs, "youtube-playlists")
 
@@ -1823,9 +1969,24 @@ def fetch_songs_from_public_playlists_by_keywords(
         direct_track_songs = search_tracks_by_keywords(
             keywords,
             max_songs,
-            label="Searching Spotify and YouTube tracks directly...",
+            label=(
+                "Searching Spotify and YouTube tracks directly..."
+                if spotify_api_available
+                else "Spotify API is unavailable, so this run will search YouTube directly instead..."
+            ),
+            include_spotify=spotify_api_available,
+            require_spotify_verification=spotify_api_available,
         )
         merge_song_candidates(song_map, direct_track_songs, "direct-track-search")
+    elif discovery_mode == 'web-no-spotify-api':
+        direct_track_songs = search_tracks_by_keywords(
+            keywords,
+            max_songs,
+            label="Searching YouTube tracks directly without Spotify API access...",
+            include_spotify=False,
+            require_spotify_verification=False,
+        )
+        merge_song_candidates(song_map, direct_track_songs, "youtube-track-search-no-spotify-api")
 
     song_list = list(song_map.values())
     random.shuffle(song_list)
@@ -1837,6 +1998,10 @@ def fetch_songs_from_public_playlists_by_keywords(
 
 
 def create_spotify_playlist(selected_songs):
+    if not spotify_app_credentials_configured():
+        print("Spotify playlist creation is unavailable because no Spotify app credentials are configured for this run.")
+        return
+
     # Prompt for playlist name
     playlist_name = input("Enter a name for your new playlist: ").strip()
     if not playlist_name:
@@ -1855,9 +2020,11 @@ def create_spotify_playlist(selected_songs):
         print("No tracks were found to add, so the playlist was not created.")
         return
 
+    spotify_client = get_spotify_client(required=True, prompt_if_missing=True, context="Spotify playlist creation")
+
     # Create the playlist only after we know there is something to add.
     try:
-        playlist = sp.current_user_playlist_create(playlist_name, public=False)
+        playlist = spotify_client.current_user_playlist_create(playlist_name, public=False)
         print(f"Playlist '{playlist_name}' created successfully.")
     except spotipy.exceptions.SpotifyException as e:
         abort_if_unreasonable_rate_limit_error(e)
@@ -1884,7 +2051,7 @@ def create_spotify_playlist(selected_songs):
     try:
         for i in range(0, len(track_uris), 100):
             batch = track_uris[i:i+100]
-            sp.playlist_add_items(playlist['id'], batch)
+            spotify_client.playlist_add_items(playlist['id'], batch)
         print(f"Added {len(track_uris)} tracks to '{playlist_name}'.")
     except spotipy.exceptions.SpotifyException as e:
         abort_if_unreasonable_rate_limit_error(e)
@@ -2478,4 +2645,11 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except RunAborted as error:
+        print(error)
+        sys.exit(1)
+    except KeyboardInterrupt:
+        print("\nRun cancelled.")
+        sys.exit(130)

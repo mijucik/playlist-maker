@@ -13,7 +13,7 @@ It can:
 - export results to `.txt` or `.html`
 - create a new private Spotify playlist from the selected songs
 
-For public discovery, YouTube-derived candidates are only kept if they can also be resolved on Spotify.
+For public discovery, the Spotify-backed modes try to verify YouTube-derived candidates on Spotify. The new `No Spotify API` mode skips that verification and keeps likely-song results from YouTube so the run can still finish without Spotify auth or Spotify Web API quota.
 
 ## Fresh Machine Setup
 
@@ -127,6 +127,7 @@ The web app lets people:
 - preview generated HTML output inside the web app and open generated files from there
 - recognize existing local files in `generated/` and list them in the browser for reopening
 - open the local launcher in a browser automatically
+- run the public no-Spotify-API flows even with blank Spotify credentials
 
 The app also tries to be conservative with Spotify API usage now:
 
@@ -134,6 +135,8 @@ The app also tries to be conservative with Spotify API usage now:
 - it honors Spotify `429` backoff windows when they are short enough to retry automatically
 - if Spotify keeps rate-limiting for too long, the run exits early instead of hammering the API
 - it avoids some unnecessary repeat Spotify lookups when a song already has a Spotify URL or URI
+
+If Spotify says a retry window is over 2 minutes, the current run stops immediately instead of waiting.
 
 ### 4. Create a Spotify app
 
@@ -234,11 +237,12 @@ Useful flows:
 - `2` filters your own playlists by `Rediscover`, `contains`, or `regex`
 - `1`, `2`, `3`, and `4` can be limited to `any`, `public only`, or `private only` playlists
 - `5` searches public music sources by keywords
-- `5` supports `hybrid`, `Spotify public playlists`, `YouTube playlists`, or direct `Spotify + YouTube` track search
+- `5` supports `hybrid`, `Spotify public playlists`, `YouTube playlists`, direct `Spotify + YouTube` track search, or `No Spotify API`
 - `5` and the public `Surprise me` mode both support minimum and maximum playlist-size filters
 - `6` includes public-discovery surprise mode plus two `random-song.com` modes
 - public discovery can limit playlists to a size range with both minimum and maximum song counts
 - after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or both
+- the `No Spotify API` public-discovery mode can still generate terminal, text, or HTML output even if you do not log into Spotify
 
 ## Notes
 
