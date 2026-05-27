@@ -39,7 +39,7 @@ YOUTUBE_SEARCH_RESULT_LIMIT = 20
 SPOTIFY_MATCH_CACHE = {}
 SPOTIFY_MIN_INTERVAL_SECONDS = 0.2
 SPOTIFY_MAX_RETRIES = 4
-SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS = 60
+SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS = 120
 CURRENT_USER_PROFILE = None
 
 
@@ -104,19 +104,7 @@ class RateLimitedSpotifyClient:
             self._next_request_time = time.monotonic() + SPOTIFY_MIN_INTERVAL_SECONDS
 
     def _extract_retry_after_seconds(self, error):
-        headers = getattr(error, "headers", {}) or {}
-        retry_after = headers.get("Retry-After") or headers.get("retry-after")
-        if retry_after:
-            try:
-                return int(float(retry_after))
-            except ValueError:
-                pass
-
-        retry_match = re.search(r"Retry will occur after:\s*(\d+)\s*s", str(error))
-        if retry_match:
-            return int(retry_match.group(1))
-
-        return None
+        return extract_retry_after_seconds(error)
 
     def _call_with_rate_limit(self, method, *args, **kwargs):
         attempt = 0
@@ -136,7 +124,7 @@ class RateLimitedSpotifyClient:
                     if retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
                         raise SystemExit(
                             "Spotify rate-limited this run for too long to auto-retry "
-                            f"({retry_after_seconds} seconds). Exiting early to avoid hammering the API."
+                            f"({retry_after_seconds} seconds, over the 2 minute limit). Exiting early to avoid hammering the API."
                         )
 
                     print(
@@ -173,6 +161,31 @@ class RateLimitedSpotifyClient:
             return self._call_with_rate_limit(attribute, *args, **kwargs)
 
         return wrapped
+
+
+def extract_retry_after_seconds(error):
+    headers = getattr(error, "headers", {}) or {}
+    retry_after = headers.get("Retry-After") or headers.get("retry-after")
+    if retry_after:
+        try:
+            return int(float(retry_after))
+        except ValueError:
+            pass
+
+    retry_match = re.search(r"Retry will occur after:\s*(\d+)\s*s", str(error))
+    if retry_match:
+        return int(retry_match.group(1))
+
+    return None
+
+
+def abort_if_unreasonable_rate_limit_error(error):
+    retry_after_seconds = extract_retry_after_seconds(error)
+    if retry_after_seconds is not None and retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
+        raise SystemExit(
+            "Spotify asked this run to wait too long before retrying "
+            f"({retry_after_seconds} seconds, over the 2 minute limit). Exiting early."
+        )
 
 
 def ensure_private_directory(path):
@@ -406,6 +419,7 @@ def get_playlist_tracks(playlist_id, playlist_name):
                 tracks.extend(results['items'])
                 pbar.update(len(results['items']))
     except spotipy.exceptions.SpotifyException as e:
+        abort_if_unreasonable_rate_limit_error(e)
         print(f"Error fetching tracks from playlist '{playlist_name}': {e}")
     except Exception as e:
         print(f"Unexpected error fetching tracks from playlist '{playlist_name}': {e}")
@@ -1300,6 +1314,7 @@ def fetch_songs_from_spotify_public_playlist_pages(
             try:
                 tracks_response = sp.tracks(batch_ids)
             except spotipy.exceptions.SpotifyException as error:
+                abort_if_unreasonable_rate_limit_error(error)
                 print(f"Could not resolve Spotify tracks for playlist '{playlist_name}' via API: {error}")
                 print("Falling back to Spotify track-page metadata for the rest of this run.")
                 SPOTIFY_PUBLIC_TRACK_API_BLOCKED = True
@@ -1585,6 +1600,7 @@ def resolve_song_on_spotify(song, suppress_errors=False):
         try:
             result = sp.search(q=query, type='track', limit=5)
         except spotipy.exceptions.SpotifyException as error:
+            abort_if_unreasonable_rate_limit_error(error)
             if not suppress_errors:
                 print(f"Could not search Spotify for {song.get('title', 'Unknown Title')} by {song.get('artists', 'Unknown Artist')}: {error}")
             continue
@@ -1635,6 +1651,7 @@ def search_spotify_tracks_by_keywords(keywords, max_songs):
         try:
             results = sp.search(q=keyword_combo, type='track', limit=min(max_songs, 10))
         except spotipy.exceptions.SpotifyException as error:
+            abort_if_unreasonable_rate_limit_error(error)
             print(f"Error searching tracks for '{keyword_combo}': {error}")
             continue
 
@@ -1835,6 +1852,7 @@ def create_spotify_playlist(selected_songs):
         playlist = sp.current_user_playlist_create(playlist_name, public=False)
         print(f"Playlist '{playlist_name}' created successfully.")
     except spotipy.exceptions.SpotifyException as e:
+        abort_if_unreasonable_rate_limit_error(e)
         print(f"Error creating playlist: {e}")
         if getattr(e, "http_status", None) == 403:
             user_id = (CURRENT_USER_PROFILE or {}).get('id', 'unknown')
@@ -1861,6 +1879,7 @@ def create_spotify_playlist(selected_songs):
             sp.playlist_add_items(playlist['id'], batch)
         print(f"Added {len(track_uris)} tracks to '{playlist_name}'.")
     except spotipy.exceptions.SpotifyException as e:
+        abort_if_unreasonable_rate_limit_error(e)
         print(f"Error adding tracks to playlist: {e}")
         if getattr(e, "http_status", None) == 429:
             print(
