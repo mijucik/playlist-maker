@@ -729,34 +729,50 @@ class InteractiveRunSession:
 
         selected_count = report.get("selected_count")
         source = report.get("source")
-        if selected_count is not None:
-            song_label = "song" if selected_count == 1 else "songs"
-            source_text = f" from {escape(source)}" if source else ""
-            main_parts.append(
-                f'<p class="summary-headline"><strong>{selected_count} {song_label}</strong>{source_text}</p>'
-            )
-
         keywords = report.get("keywords")
-        if keywords:
-            kw_list = ", ".join(escape(k) for k in keywords)
-            main_parts.append(f"<p>Keywords: {kw_list}</p>")
 
-        if report.get("max_playlists"):
-            min_size = report.get("min_playlist_size")
-            max_size = report.get("max_playlist_size")
-            if min_size or max_size:
-                size_range = f"playlist size {escape(str(min_size or 'any'))}–{escape(str(max_size or 'any'))} songs"
+        # Headline: natural sentence for song count + source
+        if selected_count is not None:
+            n = selected_count
+            song_word = "song" if n == 1 else "songs"
+            picked = f"<strong>{n} {song_word}</strong>"
+            if source:
+                headline = f"Picked {picked} from {escape(source)}."
             else:
-                size_range = "no size limits"
-            main_parts.append(f"<p>Discovery: up to {escape(str(report['max_playlists']))} playlists, {size_range}</p>")
+                headline = f"Picked {picked}."
+            main_parts.append(f'<p class="summary-headline">{headline}</p>')
 
+        # Discovery details as a natural sentence
+        if report.get("max_playlists") or keywords:
+            disc_parts = []
+            if keywords:
+                if len(keywords) == 1:
+                    kw_str = f'"{escape(keywords[0])}"'
+                else:
+                    kw_str = ", ".join(f'"{escape(k)}"' for k in keywords[:-1])
+                    kw_str += f', and "{escape(keywords[-1])}"'
+                disc_parts.append(f"searched for {kw_str}")
+            if report.get("max_playlists"):
+                max_pl = escape(str(report["max_playlists"]))
+                min_size = report.get("min_playlist_size")
+                max_size = report.get("max_playlist_size")
+                pl_part = f"across up to {max_pl} playlists"
+                if min_size or max_size:
+                    pl_part += f" ({escape(str(min_size or 'any'))}–{escape(str(max_size or 'any'))} songs each)"
+                disc_parts.append(pl_part)
+            if disc_parts:
+                sentence = "It " + " ".join(disc_parts) + "."
+                main_parts.append(f"<p>{sentence}</p>")
+
+        # Output
         if self.generated_file and self.generated_file.exists():
-            kind = self.generated_file.suffix.lower().lstrip(".").upper() or "File"
+            kind = self.generated_file.suffix.lower().lstrip(".").upper() or "file"
             filename = escape(report.get("artifact_name") or self.generated_file.name)
-            main_parts.append(f'<p>{kind} file <strong>"{filename}"</strong> saved</p>')
+            main_parts.append(f'<p>Saved as a {kind} file: <strong>{filename}</strong></p>')
         elif report.get("output_format") == "terminal" or self.display_output.strip():
-            main_parts.append("<p>Songs printed in browser</p>")
+            main_parts.append("<p>Songs are printed in the browser above.</p>")
 
+        # Links
         if report.get("links_added"):
             exact_links = report.get("spotify_exact_links", 0)
             search_links = report.get("spotify_search_links", 0)
@@ -764,23 +780,30 @@ class InteractiveRunSession:
             link_parts = []
             if exact_links:
                 link_parts.append(f"{exact_links} Spotify")
-            if search_links:
-                notes_parts.append(f"<p>{search_links} Spotify search link(s) — exact match not found for those tracks</p>")
             if youtube_links:
                 link_parts.append(f"{youtube_links} YouTube")
             if link_parts:
-                main_parts.append("<p>Links added: " + ", ".join(link_parts) + "</p>")
+                total = exact_links + youtube_links
+                link_word = "link" if total == 1 else "links"
+                main_parts.append(f"<p>Each song includes {' and '.join(link_parts)} {link_word}.</p>")
+            if search_links:
+                notes_parts.append(
+                    f"<p>{search_links} song(s) linked to a Spotify search instead of a direct match — "
+                    f"exact track wasn't found.</p>"
+                )
 
+        # Playlist creation
         playlist_status = report.get("spotify_playlist_status")
         if playlist_status:
             playlist_name = report.get("spotify_playlist_name")
             status_lower = playlist_status.lower()
-            if any(word in status_lower for word in ("fail", "error", "could not", "unable")):
-                name_part = f' "{escape(playlist_name)}"' if playlist_name else ""
-                notes_parts.append(f"<p>Playlist{name_part}: {escape(playlist_status)}</p>")
+            name_part = f' "{escape(playlist_name)}"' if playlist_name else ""
+            if any(w in status_lower for w in ("fail", "error", "could not", "unable")):
+                notes_parts.append(f"<p>Spotify playlist{name_part} couldn't be created: {escape(playlist_status)}</p>")
+            elif "skip" in status_lower:
+                notes_parts.append(f"<p>Spotify playlist creation was skipped.</p>")
             else:
-                name_part = f' "{escape(playlist_name)}"' if playlist_name else ""
-                main_parts.append(f"<p>Playlist{name_part}: {escape(playlist_status)}</p>")
+                main_parts.append(f"<p>Saved to Spotify playlist{name_part}: {escape(playlist_status)}</p>")
 
         for warning in report.get("warnings", []):
             notes_parts.append(f"<p>{escape(warning)}</p>")
@@ -790,9 +813,9 @@ class InteractiveRunSession:
 
         if not main_parts:
             if self.display_output.strip():
-                main_parts.append("<p>Songs printed in browser</p>")
+                main_parts.append("<p>Songs are printed in the browser above.</p>")
             else:
-                main_parts.append("<p>Run complete</p>")
+                main_parts.append("<p>Run complete.</p>")
 
         html_out = f'<div class="summary-main">{"".join(main_parts)}</div>'
         if notes_parts:
