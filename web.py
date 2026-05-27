@@ -338,7 +338,7 @@ def build_default_form_data():
         "visibility": "Any visibility",
         "filter_mode": "Rediscover preset",
         "filter_value": "",
-        "max_playlists": "50",
+        "max_playlists": "15",
         "min_playlist_size": "",
         "max_playlist_size": "100",
         "discovery_mode": "YouTube Music discovery",
@@ -392,7 +392,7 @@ def build_initial_cli_answers(form):
 
     elif source == "Public discovery":
         lines.append("2")  # top-level: Public Discovery
-        lines.append(form["max_playlists"].strip() or "50")
+        lines.append(form["max_playlists"].strip() or "15")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
         lines.append(form["keywords"].strip())
@@ -406,7 +406,7 @@ def build_initial_cli_answers(form):
         }[form["surprise_mode"]]
         lines.append(surprise_choice)
         if surprise_choice == "1":
-            lines.append(form["max_playlists"].strip() or "50")
+            lines.append(form["max_playlists"].strip() or "15")
             lines.append(form["min_playlist_size"].strip())
             lines.append(form["max_playlist_size"].strip())
         elif surprise_choice == "3":
