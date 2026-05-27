@@ -56,6 +56,18 @@ INTERACTIVE_PROMPTS = {
         "choices": [],
         "placeholder": "Playlist name",
     },
+    "Do you want to switch to a no-Spotify-API Surprise Me fallback instead? (yes/no): ": {
+        "id": "no_spotify_fallback",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
+    "Do you want to try YouTube links instead? (yes/no): ": {
+        "id": "youtube_link_fallback",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
 }
 
 PROMPT_SUFFIXES = list(AUTO_RESPONSE_PROMPTS) + list(INTERACTIVE_PROMPTS)

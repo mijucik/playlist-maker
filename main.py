@@ -2240,6 +2240,18 @@ def prompt_for_output_format():
             return file_format
         print("Invalid file format choice. Please enter 'txt', 'html', 'terminal', or 'N/A'.")
 
+
+def prompt_yes_no(prompt_text, default=None):
+    while True:
+        raw_value = input(prompt_text).strip().lower()
+        if not raw_value and default in {'yes', 'no'}:
+            return default == 'yes'
+        if raw_value in {'yes', 'y'}:
+            return True
+        if raw_value in {'no', 'n'}:
+            return False
+        print("Please answer yes or no.")
+
 # List of emotions/genres for the "Surprise Me" option
 
 def generate_random_keywords():
@@ -2280,6 +2292,123 @@ def print_project_summary():
     print("- Can look up selected songs on Spotify, YouTube, or both.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
+
+
+def select_random_songs(song_list, requested_count):
+    if not song_list:
+        return []
+
+    if requested_count > len(song_list):
+        print(f"Only found {len(song_list)} songs. Returning all of them.")
+        requested_count = len(song_list)
+
+    return random.sample(song_list, requested_count)
+
+
+def fetch_public_discovery_with_auto_fallback(
+    keywords,
+    max_playlists,
+    max_songs,
+    max_tracks_per_playlist,
+    min_playlist_size,
+    max_playlist_size,
+    discovery_mode,
+):
+    effective_mode = discovery_mode
+    try:
+        song_list = fetch_songs_from_public_playlists_by_keywords(
+            keywords,
+            max_playlists=max_playlists,
+            max_songs=max_songs,
+            max_tracks_per_playlist=max_tracks_per_playlist,
+            min_playlist_size=min_playlist_size,
+            max_playlist_size=max_playlist_size,
+            discovery_mode=discovery_mode,
+        )
+        return song_list, effective_mode
+    except (RunAborted, SpotifyApiUnavailableError) as error:
+        if discovery_mode == 'web-no-spotify-api':
+            raise
+
+        print(f"Spotify became unavailable during {describe_public_discovery_mode(discovery_mode)}: {error}")
+        print("Switching this run to the no-Spotify-API public discovery fallback.")
+        effective_mode = 'web-no-spotify-api'
+        song_list = fetch_songs_from_public_playlists_by_keywords(
+            keywords,
+            max_playlists=max_playlists,
+            max_songs=max_songs,
+            max_tracks_per_playlist=max_tracks_per_playlist,
+            min_playlist_size=min_playlist_size,
+            max_playlist_size=max_playlist_size,
+            discovery_mode=effective_mode,
+        )
+        return song_list, effective_mode
+
+
+def build_no_spotify_surprise_fallback_source_description(keywords):
+    return f"Fallback Surprise Me (No Spotify API via YouTube public discovery for {', '.join(keywords)})"
+
+
+def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reason):
+    print(f"Spotify became unavailable for this source: {failure_reason}")
+    wants_fallback = prompt_yes_no(
+        "Do you want to switch to a no-Spotify-API Surprise Me fallback instead? (yes/no): "
+    )
+    if not wants_fallback:
+        return None
+
+    max_playlists = 10
+    max_songs = 20 * max_playlists
+    max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
+    fallback_keywords = random.sample(EMOTIONS_GENRES, 3)
+    print("Switching to the no-Spotify-API fallback with random emotions/genres.")
+    print(f"Random fallback emotions/genres: {', '.join(fallback_keywords)}")
+
+    song_list = fetch_songs_from_public_playlists_by_keywords(
+        fallback_keywords,
+        max_playlists=max_playlists,
+        max_songs=max_songs,
+        max_tracks_per_playlist=max_tracks_per_playlist,
+        min_playlist_size=None,
+        max_playlist_size=None,
+        discovery_mode='web-no-spotify-api',
+    )
+    if not song_list:
+        print("The no-Spotify-API fallback did not find any songs.")
+        return None
+
+    selected_songs = select_random_songs(song_list, num_songs)
+    if not selected_songs:
+        print("The no-Spotify-API fallback did not find any songs.")
+        return None
+
+    return {
+        'selected_songs': selected_songs,
+        'selected_playlists': [],
+        'source_description': build_no_spotify_surprise_fallback_source_description(fallback_keywords),
+        'source_choice': '6',
+    }
+
+
+def maybe_fallback_link_lookup(selected_songs, original_link_platform, failure_reason):
+    print(f"Spotify link lookup became unavailable: {failure_reason}")
+
+    if original_link_platform == 'both':
+        print("Continuing with YouTube links only for this run.")
+        attach_platform_links(selected_songs, 'youtube')
+        return 'youtube'
+
+    if original_link_platform == 'spotify':
+        wants_youtube = prompt_yes_no(
+            "Do you want to try YouTube links instead? (yes/no): "
+        )
+        if wants_youtube:
+            attach_platform_links(selected_songs, 'youtube')
+            return 'youtube'
+        print("Continuing without song links.")
+        return None
+
+    return original_link_platform
 
 
 def main():
@@ -2380,7 +2509,7 @@ def main():
 
     if source_choice == '5' or (source_choice == '6' and keywords is not None):
         # Handle option 5 and 6 without caching
-        song_list = fetch_songs_from_public_playlists_by_keywords(
+        song_list, effective_discovery_mode = fetch_public_discovery_with_auto_fallback(
             keywords,
             max_playlists=max_playlists,
             max_songs=max_songs,
@@ -2392,13 +2521,25 @@ def main():
         if not song_list:
             print("No tracks found.")
             return
-        selected_songs = random.sample(song_list, min(num_songs, len(song_list)))
+        selected_songs = select_random_songs(song_list, num_songs)
+        if effective_discovery_mode != public_discovery_mode:
+            public_discovery_mode = effective_discovery_mode
+            if source_choice == '5':
+                source_description = (
+                    f"Public Discovery by Keywords/Phrases "
+                    f"({describe_public_discovery_mode(public_discovery_mode)})"
+                )
+            else:
+                source_description = (
+                    f"Surprise Me (Random Emotions/Genres via "
+                    f"{describe_public_discovery_mode(public_discovery_mode)})"
+                )
         selected_playlists = []
     elif source_choice == '6' and surprise_song_list is not None:
         if not surprise_song_list:
             print("No tracks found.")
             return
-        selected_songs = random.sample(surprise_song_list, min(num_songs, len(surprise_song_list)))
+        selected_songs = select_random_songs(surprise_song_list, num_songs)
         selected_playlists = []
     else:
         print(f"Selected source: {source_description}")
@@ -2421,11 +2562,22 @@ def main():
 
                 # Fetch songs and update cache
                 print("Fetching songs and updating cache...")
-                if source_choice == '4':
-                    song_list, selected_playlists = fetch_and_cache_songs(cache_file)
-                else:
-                    song_list = fetch_and_cache_songs(cache_file)
-                    selected_playlists = []
+                try:
+                    if source_choice == '4':
+                        song_list, selected_playlists = fetch_and_cache_songs(cache_file)
+                    else:
+                        song_list = fetch_and_cache_songs(cache_file)
+                        selected_playlists = []
+                except (RunAborted, SpotifyApiUnavailableError) as error:
+                    fallback_result = maybe_switch_personal_source_to_no_spotify_fallback(num_songs, error)
+                    if not fallback_result:
+                        print("Ending this run.")
+                        return
+                    selected_songs = fallback_result['selected_songs']
+                    selected_playlists = fallback_result['selected_playlists']
+                    source_description = fallback_result['source_description']
+                    source_choice = fallback_result['source_choice']
+                    song_list = None
             else:
                 # Load songs from cache
                 print("Loading songs from cache...")
@@ -2446,26 +2598,42 @@ def main():
             print(f"Cache file '{cache_file}' does not exist.")
             # No cache file exists, fetch songs and create cache
             print("Fetching songs and creating cache...")
-            if source_choice == '4':
-                song_list, selected_playlists = fetch_and_cache_songs(cache_file)
-            else:
-                song_list = fetch_and_cache_songs(cache_file)
-                selected_playlists = []
+            try:
+                if source_choice == '4':
+                    song_list, selected_playlists = fetch_and_cache_songs(cache_file)
+                else:
+                    song_list = fetch_and_cache_songs(cache_file)
+                    selected_playlists = []
+            except (RunAborted, SpotifyApiUnavailableError) as error:
+                fallback_result = maybe_switch_personal_source_to_no_spotify_fallback(num_songs, error)
+                if not fallback_result:
+                    print("Ending this run.")
+                    return
+                selected_songs = fallback_result['selected_songs']
+                selected_playlists = fallback_result['selected_playlists']
+                source_description = fallback_result['source_description']
+                source_choice = fallback_result['source_choice']
+                song_list = None
 
-        if not song_list:
-            print("No tracks found.")
-            return
+        if song_list is not None:
+            if not song_list:
+                print("No tracks found.")
+                return
 
-        if num_songs > len(song_list):
-            print(f"Only found {len(song_list)} songs. Returning all of them.")
-            num_songs = len(song_list)
+            selected_songs = select_random_songs(song_list, num_songs)
+            if not selected_songs:
+                print("No tracks found.")
+                return
+            print(f"Selected {len(selected_songs)} songs.")
 
-        selected_songs = random.sample(song_list, num_songs)
-        print(f"Selected {num_songs} songs.")
+    num_songs = len(selected_songs)
 
     link_platform = prompt_for_link_platform()
     if link_platform:
-        attach_platform_links(selected_songs, link_platform)
+        try:
+            attach_platform_links(selected_songs, link_platform)
+        except (RunAborted, SpotifyApiUnavailableError) as error:
+            link_platform = maybe_fallback_link_lookup(selected_songs, link_platform, error)
 
     if num_songs == 1:
         # Output the single song
@@ -2638,7 +2806,10 @@ def main():
     # Ask the user if they want to create a Spotify playlist
     create_playlist_choice = input("Do you want to create a Spotify playlist with these songs? (yes/no): ").strip().lower()
     if create_playlist_choice == 'yes':
-        create_spotify_playlist(selected_songs)
+        try:
+            create_spotify_playlist(selected_songs)
+        except (RunAborted, SpotifyApiUnavailableError) as error:
+            print(f"Skipping Spotify playlist creation because Spotify is unavailable right now: {error}")
 
     if any(song.get('spotify_url') or song.get('youtube_url') for song in selected_songs):
         maybe_open_platform_links(selected_songs, link_platform)
