@@ -1301,8 +1301,9 @@ def get_spotify_client_for_playlist_creation():
             offer_spotify_credentials_in_terminal(purpose="Spotify playlist creation")
         if os.getenv("SPOTIFY_PICKER_WEB_STATUS") == "1":
             print(
-                "Spotify may ask you to authorize in a browser. "
-                "If asked for the redirected URL, copy the full browser address after approving and paste it here."
+                "A Spotify authorization tab is opening in your browser — "
+                "please approve it there to continue. "
+                "If Spotify asks you to paste a redirect URL, copy the full address bar URL after approving and paste it below."
             )
         return get_spotify_client(
             required=True,

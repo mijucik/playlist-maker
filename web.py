@@ -125,7 +125,9 @@ WEB_NOISE_EXACT_LINES = {
     "1. No links",
     "2. YouTube only",
     "3. Spotify only",
+    "3. Spotify only (requires Spotify API access)",
     "4. Spotify and YouTube",
+    "4. Spotify and YouTube (Spotify requires API access)",
     "1. All playlists",
     "2. Filter by name",
     "3. Own playlists only",
@@ -145,8 +147,9 @@ WEB_NOISE_PREFIXES = (
     "Spotify API credentials are not configured.",
     "They are needed for",
     "Spotify links need",
-    "Spotify may ask you to authorize",
-    "If asked for the redirected URL",
+    "Spotify links require",
+    # "Spotify may ask you to authorize" and "If asked for the redirected URL"
+    # are intentionally NOT filtered so users see the OAuth instruction.
     "Enter Spotify credentials now",
     "Spotify Client ID:",
     "Spotify Client Secret:",
@@ -475,8 +478,13 @@ def build_initial_cli_answers(form):
             lines.append("yes" if form.get("random_new") else "no")
             lines.append("yes" if form.get("random_exclude_singles") else "no")
 
-    lines.append(form.get("link_platform", "2"))
-    lines.append(form["output_format"])
+    # link_platform and output_format are NOT pre-written here.
+    # They are answered via form_auto_responses in InteractiveRunSession when
+    # those exact prompt strings appear in subprocess stdout. This prevents
+    # misalignment when ensure_spotify_link_access() inserts extra interactive
+    # prompts (e.g. "Enable optional Spotify API calls?") between link_platform
+    # and output_format, which would otherwise consume the output_format answer
+    # from the pre-written buffer and cause prompt_for_output_format() to freeze.
 
     return "\n".join(lines) + "\n"
 
@@ -583,6 +591,14 @@ class InteractiveRunSession:
         self.generated_file = None
         self.error = None
         self.was_cancelled = False
+        # Per-session auto-responses: when these exact prompt strings appear in
+        # subprocess stdout, reply immediately with the form's pre-selected value.
+        # This avoids consuming pre-written stdin buffer entries out of order when
+        # ensure_spotify_link_access() inserts extra prompts at runtime.
+        self.form_auto_responses = {
+            "Enter 1, 2, 3, or 4 [2]: ": form.get("link_platform", "2"),
+            "Output format (txt / html / terminal): ": form.get("output_format", "terminal"),
+        }
 
     def start(self):
         with self.lock:
@@ -667,6 +683,12 @@ class InteractiveRunSession:
                 if self.tail.endswith(prompt_text):
                     auto_response = response
                     break
+
+            if auto_response is None:
+                for prompt_text, response in self.form_auto_responses.items():
+                    if self.tail.endswith(prompt_text):
+                        auto_response = response
+                        break
 
             if auto_response is None:
                 for prompt_text, prompt_meta in INTERACTIVE_PROMPTS.items():
