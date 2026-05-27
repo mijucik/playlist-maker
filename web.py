@@ -526,6 +526,7 @@ class InteractiveRunSession:
         env["SPOTIPY_CLIENT_SECRET"] = self.form["client_secret"].strip()
         env["SPOTIPY_REDIRECT_URI"] = self.form["redirect_uri"].strip() or DEFAULT_REDIRECT_URI
         env["SPOTIFY_PICKER_WEB_STATUS"] = "1"
+        env["PYTHONUTF8"] = "1"
 
         self.process = subprocess.Popen(
             [sys.executable, "main.py"],
@@ -535,6 +536,7 @@ class InteractiveRunSession:
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
+            encoding="utf-8",
             bufsize=0,
         )
 

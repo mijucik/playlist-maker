@@ -27,6 +27,12 @@ from ytmusicapi import YTMusic
 
 logging.getLogger("spotipy").setLevel(logging.CRITICAL)
 
+# Windows consoles default to cp1252 which can't encode emoji in playlist/song names.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
 
 APP_NAME = "spotify-scripts"
 APP_DIR = Path.home() / f".{APP_NAME}"
