@@ -15,61 +15,58 @@ It can:
 
 Public discovery uses unauthenticated YouTube Music metadata through `ytmusicapi` and avoids Spotify's API entirely. Spotify API access is mainly used for your own playlists and for the final playlist-creation step when the app needs real Spotify track URIs.
 
-## Fresh Machine Setup
+---
 
-### 1. Install what you need
+## Quick Start — Mac
 
-You need:
+> No terminal experience required. Everything is handled for you.
 
-- `git`
-- Python 3
-- `pip` for Python 3
+1. Download or clone this repository.
+2. Double-click **`start.command`** in Finder.
 
-Check whether they are already installed:
+That's it. The script will:
+
+- check that Python 3 is installed
+- create a self-contained virtual environment inside the project folder (`venv/`)
+- install all dependencies inside that virtual environment automatically
+- open the Playlist Maker web app in your browser
+
+On first run it installs everything, which may take about a minute. Every run after that starts in a few seconds.
+
+> **If macOS says "start.command cannot be opened because it is from an unidentified developer":**
+> Right-click (or Control-click) the file → Open → Open anyway.
+> You only need to do this once.
+
+---
+
+## Manual Setup
+
+If you prefer the terminal, or you are on Windows or Linux, follow these steps.
+
+### 1. Install Python 3
+
+**macOS:**
 
 ```bash
-git --version
+# Check if you already have it
 python3 --version
-python3 -m pip --version
+
+# If not, install with Homebrew
+brew install python
+# or download from https://www.python.org/downloads/
 ```
 
-If one of those commands fails:
+**Windows:**
 
-- On macOS, install Xcode Command Line Tools with `xcode-select --install`
-- Then install Python 3 from [python.org](https://www.python.org/downloads/) or with Homebrew
+Download Python 3 from [python.org](https://www.python.org/downloads/windows/) and check `Add python.exe to PATH` during install.
 
-If you use Homebrew on macOS:
+**Ubuntu / Debian:**
 
 ```bash
-brew install python git
+sudo apt update && sudo apt install -y python3 python3-pip python3-venv
 ```
 
-On Windows:
-
-- Install `Git for Windows` from [git-scm.com](https://git-scm.com/downloads/win)
-- Install Python 3 from [python.org](https://www.python.org/downloads/windows/)
-- Make sure `Add python.exe to PATH` is enabled during install
-
-Then verify in `PowerShell`:
-
-```powershell
-git --version
-python --version
-python -m pip --version
-```
-
-On Ubuntu/Debian Linux:
-
-```bash
-sudo apt update
-sudo apt install -y git python3 python3-pip
-```
-
-On Fedora:
-
-```bash
-sudo dnf install -y git python3 python3-pip
-```
+---
 
 ### 2. Clone the repository
 
@@ -78,178 +75,136 @@ git clone https://github.com/mijucik/playlist-maker.git
 cd playlist-maker
 ```
 
-On Windows PowerShell:
+---
 
-```powershell
-git clone https://github.com/mijucik/playlist-maker.git
-cd playlist-maker
-```
+### 3. Create a virtual environment
 
-### 3. Install Python dependencies
+A virtual environment keeps the app's dependencies isolated from everything else on your machine. This avoids version conflicts and is the recommended approach.
+
+**macOS / Linux:**
 
 ```bash
-python3 -m pip install -r requirements.txt
+python3 -m venv venv
+source venv/bin/activate
 ```
 
-On Windows PowerShell:
+**Windows (PowerShell):**
 
 ```powershell
-python -m pip install -r requirements.txt
+python -m venv venv
+venv\Scripts\Activate.ps1
 ```
 
-### 3a. Use the web app if you want a simpler launcher
+> You will see `(venv)` at the start of your prompt when the virtual environment is active.
+> Run the activate command again any time you open a new terminal window.
 
-If you want a simpler browser-based launcher instead of the raw CLI, run:
+---
+
+### 4. Install dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+---
+
+### 5. Run the app
 
 ```bash
 python3 web.py
 ```
 
-On Windows PowerShell:
+**Windows:**
 
 ```powershell
 python web.py
 ```
 
-The web app will try to install missing Python packages from [requirements.txt](/Users/kevintang/Downloads/spotify-scripts-main/requirements.txt:1) automatically the first time you run it, so most people only need:
+The web app opens in your browser automatically. It lets you:
 
-- Python 3
-- `pip`
-- their own Spotify app credentials
+- enter Spotify credentials once and save them locally
+- choose options from dropdowns instead of the raw CLI
+- watch a live status feed as the run progresses
+- answer follow-up prompts (cache refresh, playlist creation, naming) directly in the browser
+- see a summary with song count, output filename, link counts, and playlist status
+- preview generated HTML inside the app and open generated files from there
 
-The web app lets people:
-
-- enter Spotify app credentials once and save them locally
-- move through the same decision flow as the terminal app without seeing every option at once
-- choose common playlist/search options from dropdowns
-- watch the run happen in a small status feed that shows only the current phase
-- turn on `Verbose` when you want to see the fuller terminal-style run output in the browser
-- answer follow-up prompts like cache refresh, playlist creation, and playlist naming directly in the browser
-- see a final summary with song count, output filename, link counts, and playlist status
-- preview generated HTML output inside the web app and open generated files from there
-- recognize existing local files in `generated/` and list them in the browser for reopening
-- open the local launcher in a browser automatically
-- run the public discovery flows even with blank Spotify credentials
-
-The app is conservative with Spotify API usage:
-
-- it throttles Spotify Web API calls slightly instead of bursting them all at once
-- it honors Spotify `429` backoff windows when they are short enough to retry automatically
-- if Spotify keeps rate-limiting for too long, the run exits early instead of hammering the API
-- it avoids some unnecessary repeat Spotify lookups when a song already has a Spotify URL or URI
-- public discovery no longer spends Spotify quota on playlist search
-
-If Spotify says a retry window is over 2 minutes, the current run stops immediately instead of waiting.
-For personal-playlist sources, it offers a no-Spotify-API YouTube Music Surprise Me fallback instead of forcing a full restart.
-The app also disables Spotipy's own long-lived HTTP retry behavior so these fallback decisions happen immediately instead of waiting on Spotify's full `Retry-After` window.
-
-### 4. Create a Spotify app
-
-You need your own Spotify developer app so the script can authenticate to your account:
-
-1. Sign in at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
-2. Create an app.
-3. Choose `Web API` when Spotify asks which APIs you plan to use.
-4. Open the app settings.
-5. Copy the `Client ID`.
-6. Reveal and copy the `Client Secret`.
-7. Add this redirect URI to the app:
-
-```text
-http://127.0.0.1:8080/callback
-```
-
-Important:
-
-- The redirect URI must match exactly.
-- Use `127.0.0.1`, not `localhost`.
-- Playlist permissions are granted during the OAuth login flow, not in the Spotify dashboard.
-
-### 5. Provide your Spotify credentials
-
-Option A: let the script prompt you.
+To run the plain terminal version instead:
 
 ```bash
 python3 main.py
 ```
 
-Option B: export environment variables first.
+---
+
+### 6. Create a Spotify app (optional, needed for personal playlists)
+
+Public discovery and Surprise Me work without Spotify credentials. You only need a Spotify app if you want to use your own playlists, get exact Spotify track links, or create a playlist.
+
+1. Sign in at the [Spotify Developer Dashboard](https://developer.spotify.com/dashboard/).
+2. Create an app and choose **Web API**.
+3. Open the app settings and copy the **Client ID** and **Client Secret**.
+4. Add this redirect URI exactly as shown:
+
+```
+http://127.0.0.1:8080/callback
+```
+
+Use `127.0.0.1`, not `localhost`. The redirect URI must match exactly.
+
+Enter your credentials in the web app settings panel, or export them before running:
+
+**macOS / Linux:**
 
 ```bash
 export SPOTIPY_CLIENT_ID="your-client-id"
 export SPOTIPY_CLIENT_SECRET="your-client-secret"
 export SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
-python3 main.py
+python3 web.py
 ```
 
-On Windows PowerShell:
+**Windows (PowerShell):**
 
 ```powershell
 $env:SPOTIPY_CLIENT_ID="your-client-id"
 $env:SPOTIPY_CLIENT_SECRET="your-client-secret"
 $env:SPOTIPY_REDIRECT_URI="http://127.0.0.1:8080/callback"
-python main.py
+python web.py
 ```
 
-You can also use [.env.example](/Users/kevintang/Downloads/spotify-scripts-main/.env.example:1) as a reference, but this project does not auto-load `.env` files.
+The first time you use a personal-playlist feature, Spotify opens a browser window asking you to approve access. Your auth token is stored locally in `~/.spotify-scripts/token_cache.json` for future runs.
 
-If you save credentials through `web.py`, the CLI will reuse those saved app settings automatically on future runs.
+---
 
-### 6. Authorize the app in your browser
+### 7. Running again later
 
-The first time you run the script, Spotify should open a browser window and ask you to approve access. The auth token is then stored in `~/.spotify-scripts/token_cache.json` for later runs.
+If you used `start.command`, just double-click it. It activates the virtual environment and starts the app.
 
-### 7. Run it again later
+If you set up manually, re-activate the virtual environment first:
 
-Once dependencies are installed, the normal command is:
+**macOS / Linux:**
 
 ```bash
 cd playlist-maker
-python3 main.py
+source venv/bin/activate
+python3 web.py
 ```
 
-On Windows PowerShell:
+**Windows:**
 
 ```powershell
 cd playlist-maker
-python main.py
+venv\Scripts\Activate.ps1
+python web.py
 ```
 
-## Security improvements
-
-- no Spotify client secret is stored in the code
-- the script prompts for Spotify credentials if environment variables are missing
-- auth tokens are cached in `~/.spotify-scripts/token_cache.json` with owner-only permissions
-- `python-dotenv` was removed, which also removes the flagged `set_key` advisory from this project
-- `spotipy` was bumped to `2.26.0`
-
-## Running The Script
-
-Install dependencies:
-
-```bash
-python3 -m pip install -r requirements.txt
-```
-
-Run the main script:
-
-```bash
-python3 main.py
-```
-
-Useful flows:
-
-- `My Spotify playlists` pulls from your own playlists and can filter by visibility, playlist name, text, or regex.
-- `Public discovery` searches YouTube Music by keywords and can limit playlist sizes.
-- `Surprise me` can use random public-discovery keywords or `random-song.com`.
-- After songs are chosen, the app can include Spotify and/or YouTube links.
-- Public discovery can still generate terminal, text, or HTML output even if you do not log into Spotify.
+---
 
 ## Notes
 
-- `main.py` is the best entrypoint to use.
-- For most people, playlist-name `contains` matching is simpler than regex. Regex is available when you want more control.
-- Public discovery results carry YouTube links from YouTube Music `videoId` metadata. Spotify links resolve to exact tracks when Spotify app credentials are available and safely fall back to search pages otherwise.
-- The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
-- Generated output files and cache files are ignored by git, so each machine can create its own local data without shipping personal artifacts in the repo.
-- The old root-level `.cache` file was Spotipy's token cache format.
+- The `venv/` folder lives inside the project and is not tracked by git. Each person gets their own.
+- Cache files (`song_cache_*.json`) and generated output files are also local and not tracked by git.
+- The app throttles Spotify API calls and respects `429` backoff windows automatically. If Spotify's retry window is over 2 minutes, the run stops early rather than waiting.
+- Public discovery results carry YouTube links from YouTube Music video metadata. Spotify links resolve to exact tracks when credentials are available, and fall back to Spotify search pages otherwise.
+- Auth tokens are cached in `~/.spotify-scripts/token_cache.json` with owner-only permissions.
