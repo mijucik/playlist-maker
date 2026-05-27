@@ -28,11 +28,13 @@ The script checks for Python, creates a virtual environment, installs all depend
 
 macOS flags scripts downloaded from the internet. There are two ways around it — use whichever feels easier.
 
-**Option A — right-click to open (one time only):**
+**Option A — Privacy & Security settings (one time only):**
 
-1. Right-click (or Control-click) `start.command` in Finder.
-2. Choose **Open** from the menu.
-3. Click **Open** again in the dialog that appears.
+1. Double-click `start.command`. macOS will show an error saying it cannot be opened.
+2. Open **System Settings** → **Privacy & Security**.
+3. Scroll down to the **Security** section — you will see a message about `start.command` being blocked.
+4. Click **Open Anyway**.
+5. Enter your Mac password if prompted, then click **Open**.
 
 macOS remembers your choice, so double-clicking works normally from then on.
 
