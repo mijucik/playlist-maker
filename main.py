@@ -122,6 +122,10 @@ class RateLimitedSpotifyClient:
                         retry_after_seconds = min(2 ** attempt, 10)
 
                     if retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
+                        print(
+                            "Stopping this run because Spotify asked for a retry window "
+                            f"of {retry_after_seconds} seconds, which is over 2 minutes."
+                        )
                         raise SystemExit(
                             "Spotify rate-limited this run for too long to auto-retry "
                             f"({retry_after_seconds} seconds, over the 2 minute limit). Exiting early to avoid hammering the API."
@@ -182,6 +186,10 @@ def extract_retry_after_seconds(error):
 def abort_if_unreasonable_rate_limit_error(error):
     retry_after_seconds = extract_retry_after_seconds(error)
     if retry_after_seconds is not None and retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
+        print(
+            "Stopping this run because Spotify asked for a retry window "
+            f"of {retry_after_seconds} seconds, which is over 2 minutes."
+        )
         raise SystemExit(
             "Spotify asked this run to wait too long before retrying "
             f"({retry_after_seconds} seconds, over the 2 minute limit). Exiting early."
