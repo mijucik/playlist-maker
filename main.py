@@ -134,11 +134,10 @@ class RateLimitedSpotifyClient:
                         retry_after_seconds = min(2 ** attempt, 10)
 
                     if retry_after_seconds > SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS:
-                        print(
+                        raise SystemExit(
                             "Spotify rate-limited this run for too long to auto-retry "
-                            f"({retry_after_seconds} seconds)."
+                            f"({retry_after_seconds} seconds). Exiting early to avoid hammering the API."
                         )
-                        raise
 
                     print(
                         "Spotify rate limit reached. Waiting "
@@ -146,6 +145,13 @@ class RateLimitedSpotifyClient:
                     )
                     time.sleep(retry_after_seconds)
                     continue
+
+                if http_status == 429:
+                    retry_summary = (
+                        f"Spotify kept returning HTTP 429 after {attempt} attempt(s). "
+                        "Exiting early to avoid hammering the API."
+                    )
+                    raise SystemExit(retry_summary)
 
                 if http_status in {500, 502, 503} and attempt <= SPOTIFY_MAX_RETRIES:
                     backoff_seconds = min(2 ** attempt, 10)

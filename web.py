@@ -13,6 +13,7 @@ import threading
 import urllib.parse
 import uuid
 import webbrowser
+from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
@@ -62,6 +63,7 @@ REQUIRED_MODULES = {
     "spotipy": "spotipy==2.26.0",
     "tqdm": "tqdm==4.66.5",
 }
+GENERATED_DIR = REPO_DIR / "generated"
 
 
 def ensure_private_directory(path):
@@ -135,6 +137,30 @@ def ensure_cli_dependencies():
 
 def get_saved_spotify_config():
     return load_local_config().get("spotify_app", {})
+
+
+def list_generated_files(limit=12):
+    if not GENERATED_DIR.exists():
+        return []
+
+    generated_files = [
+        path for path in GENERATED_DIR.iterdir()
+        if path.is_file() and not path.name.startswith(".")
+    ]
+    generated_files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+
+    entries = []
+    for path in generated_files[:limit]:
+        entries.append(
+            {
+                "name": path.name,
+                "relative_path": path.relative_to(REPO_DIR).as_posix(),
+                "kind": path.suffix.lower().lstrip(".") or "file",
+                "mtime": datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+                "url": "/generated-file?path=" + urllib.parse.quote(path.relative_to(REPO_DIR).as_posix()),
+            }
+        )
+    return entries
 
 
 def parse_form_data(raw_body):
@@ -626,6 +652,18 @@ def render_page(form, status="Ready."):
       border-radius: 12px;
       background: white;
     }}
+    .generated-list {{
+      padding-left: 18px;
+      margin: 0;
+    }}
+    .generated-list li {{
+      margin-bottom: 10px;
+    }}
+    .generated-list a {{
+      color: #1f7a4d;
+      text-decoration: none;
+      font-weight: 600;
+    }}
     @media (max-width: 720px) {{
       .grid {{
         grid-template-columns: 1fr;
@@ -832,6 +870,12 @@ def render_page(form, status="Ready."):
       <div class="row" id="artifact-actions"></div>
       <iframe id="artifact-frame" class="hidden"></iframe>
     </div>
+
+    <div class="card" id="existing-generated-card">
+      <h2>Existing Generated Files</h2>
+      <p class="section-copy">If this clone already has locally generated output files, you can reopen them here.</p>
+      <ul class="generated-list" id="existing-generated-list"></ul>
+    </div>
   </div>
   <script>
     let currentSessionId = null;
@@ -871,6 +915,7 @@ def render_page(form, status="Ready."):
     const artifactCard = document.getElementById("artifact-card");
     const artifactActions = document.getElementById("artifact-actions");
     const artifactFrame = document.getElementById("artifact-frame");
+    const existingGeneratedList = document.getElementById("existing-generated-list");
 
     function setHidden(element, shouldHide) {{
       element.classList.toggle("hidden", shouldHide);
@@ -947,6 +992,22 @@ def render_page(form, status="Ready."):
       }}
     }}
 
+    async function refreshExistingGeneratedFiles() {{
+      const response = await fetch("/api/generated-files");
+      const data = await response.json();
+      const files = data.files || [];
+
+      if (!files.length) {{
+        existingGeneratedList.innerHTML = "<li>No generated files found yet.</li>";
+        return;
+      }}
+
+      existingGeneratedList.innerHTML = files.map((file) => (
+        `<li><a href="${{file.url}}" target="_blank" rel="noreferrer">${{file.name}}</a> ` +
+        `<span>(${{file.kind}}, updated ${{file.mtime}})</span></li>`
+      )).join("");
+    }}
+
     function renderPrompt(data) {{
       const prompt = data.prompt;
       if (!prompt) {{
@@ -1004,6 +1065,7 @@ def render_page(form, status="Ready."):
 
       if (data.finished) {{
         setRunningState(false);
+        refreshExistingGeneratedFiles();
         if (pollTimer) {{
           clearTimeout(pollTimer);
           pollTimer = null;
@@ -1093,6 +1155,7 @@ def render_page(form, status="Ready."):
 
     syncSettingsIntoRunForm();
     updateFlow();
+    refreshExistingGeneratedFiles();
   </script>
 </body>
 </html>"""
@@ -1134,6 +1197,36 @@ class WebHandler(BaseHTTPRequestHandler):
                 self._send_json({"error": "Session not found."}, status_code=404)
                 return
             self._send_json(session.serialize())
+            return
+
+        if parsed.path == "/api/generated-files":
+            self._send_json({"files": list_generated_files()})
+            return
+
+        if parsed.path == "/generated-file":
+            relative_path = query.get("path", [""])[0]
+            if not relative_path:
+                self.send_error(404, "Generated file not found.")
+                return
+
+            target_path = (REPO_DIR / relative_path).resolve()
+            try:
+                target_path.relative_to(REPO_DIR.resolve())
+            except ValueError:
+                self.send_error(403, "Invalid generated file path.")
+                return
+
+            if not target_path.exists() or not target_path.is_file():
+                self.send_error(404, "Generated file not found.")
+                return
+
+            mime_type = mimetypes.guess_type(str(target_path))[0] or "application/octet-stream"
+            payload = target_path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", mime_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
             return
 
         if parsed.path == "/artifact":

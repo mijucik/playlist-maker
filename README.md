@@ -125,12 +125,14 @@ The web app lets people:
 - watch the run happen in a live web terminal instead of waiting for one final dump
 - answer follow-up prompts like cache refresh, playlist creation, and playlist naming directly in the browser
 - preview generated HTML output inside the web app and open generated files from there
+- recognize existing local files in `generated/` and list them in the browser for reopening
 - open the local launcher in a browser automatically
 
 The app also tries to be conservative with Spotify API usage now:
 
 - it throttles Spotify Web API calls slightly instead of bursting them all at once
 - it honors Spotify `429` backoff windows when they are short enough to retry automatically
+- if Spotify keeps rate-limiting for too long, the run exits early instead of hammering the API
 - it avoids some unnecessary repeat Spotify lookups when a song already has a Spotify URL or URI
 
 ### 4. Create a Spotify app
