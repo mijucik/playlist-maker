@@ -82,6 +82,59 @@ REQUIRED_MODULES = {
     "tqdm": "tqdm==4.66.5",
 }
 GENERATED_DIR = REPO_DIR / "generated"
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+WEB_PROGRESS_RE = re.compile(r"(?:\d+%\||█{2,}|song/s|track/s|playlist/s|it/s)")
+WEB_NOISE_EXACT_LINES = {
+    "What this script does:",
+    "1. All playlists",
+    "2. Filter your playlists by name",
+    "3. Your own playlists",
+    "4. Random saved playlists",
+    "5. Search public music sources by keywords/phrases",
+    "6. Surprise me",
+    "1. Hybrid web-only: YouTube playlists + YouTube track search",
+    "2. YouTube playlists only",
+    "3. Track search only (YouTube web search)",
+    "1. Random emotions/genres via public discovery",
+    "2. random-song.com with its default random configuration",
+    "3. random-song.com with custom configuration",
+    "1. No links",
+    "2. Spotify links/search pages",
+    "3. YouTube links",
+    "4. Both Spotify and YouTube",
+}
+WEB_NOISE_PREFIXES = (
+    "Spotify credentials are read from",
+    "If they are not set,",
+    "Successfully authenticated as",
+    "Loaded ",
+    "- ",
+    "Do you want one song or more than one?",
+    "Number of songs to fetch:",
+    "Choose the source of songs:",
+    "Enter the number of your choice",
+    "Choose how public discovery should work:",
+    "Enter 1, 2, or 3",
+    "Enter 1, 2, 3, 4, 5, or 6",
+    "Enter 1, 2, 3, or 4",
+    "Enter a name for your new playlist:",
+    "Enter the maximum number of playlists to search:",
+    "Only use public playlists with at least how many songs?",
+    "Only use public playlists with at most how many songs?",
+    "Enter one or more keywords/phrases",
+    "Choose your Surprise Me mode:",
+    "Do you want to generate a text file, an HTML file, or display in terminal",
+    "Do you want to create a Spotify playlist with these songs?",
+    "Do you want to open the file now?",
+    "Do you want to open Spotify link(s) now?",
+    "Do you want to open YouTube link(s) now?",
+    "Do you want to open Spotify/YouTube link(s) now?",
+    "Which platform should be opened first?",
+    "Open all song links?",
+    "Do you want to switch to a web-only Surprise Me fallback instead?",
+    "Do you want to switch to a no-Spotify-API Surprise Me fallback instead?",
+    "Do you want to try YouTube links instead?",
+)
 
 
 def ensure_private_directory(path):
@@ -125,6 +178,29 @@ def save_local_config(config_data):
 
 def escape(value):
     return html.escape(value or "")
+
+
+def strip_ansi(text):
+    return ANSI_ESCAPE_RE.sub("", text or "")
+
+
+def should_include_web_output_line(line):
+    cleaned = strip_ansi(line).replace("\r", "").strip()
+    if not cleaned:
+        return False
+
+    if cleaned in WEB_NOISE_EXACT_LINES:
+        return False
+
+    if any(cleaned.startswith(prefix) for prefix in WEB_NOISE_PREFIXES):
+        if cleaned.startswith("Loaded ") and "emotions/genres" not in cleaned:
+            return True
+        return False
+
+    if WEB_PROGRESS_RE.search(cleaned):
+        return False
+
+    return True
 
 
 def ensure_cli_dependencies():
@@ -208,7 +284,6 @@ def build_default_form_data():
         "random_decade": "random",
         "random_new": "",
         "random_exclude_singles": "",
-        "link_choice": "No links",
         "output_format": "terminal",
     }
 
@@ -291,15 +366,6 @@ def build_initial_cli_answers(form):
             lines.append(form["random_decade"].strip() or "random")
             lines.append("yes" if form.get("random_new") else "no")
             lines.append("yes" if form.get("random_exclude_singles") else "no")
-
-    lines.append({
-        "No links": "1",
-        "Spotify search links": "2",
-        "Spotify links": "2",
-        "YouTube links": "3",
-        "Both Spotify search and YouTube": "4",
-        "Both Spotify and YouTube": "4",
-    }[form["link_choice"]])
 
     num_songs_raw = form["num_songs"].strip().lower()
     if num_songs_raw != "one":
@@ -398,8 +464,10 @@ class InteractiveRunSession:
         self.lock = threading.Lock()
         self.response_event = threading.Event()
         self.pending_answer = None
-        self.output = ""
+        self.raw_output = ""
+        self.display_output = ""
         self.tail = ""
+        self.display_line_buffer = ""
         self.finished = False
         self.exit_code = None
         self.current_prompt = None
@@ -444,6 +512,7 @@ class InteractiveRunSession:
 
             self.process.wait()
             with self.lock:
+                self._flush_display_line_locked()
                 self.finished = True
                 self.exit_code = self.process.returncode
                 if self.was_cancelled:
@@ -464,10 +533,15 @@ class InteractiveRunSession:
         auto_response = None
 
         with self.lock:
-            self.output += chunk
+            self.raw_output += chunk
             self.tail = (self.tail + chunk)[-300:]
-            if chunk == "\n":
+            if chunk == "\r":
+                self.display_line_buffer = ""
+            elif chunk == "\n":
+                self._flush_display_line_locked()
                 self._parse_recent_output_locked()
+            else:
+                self.display_line_buffer += chunk
 
             for prompt_text, response in AUTO_RESPONSE_PROMPTS.items():
                 if self.tail.endswith(prompt_text):
@@ -507,7 +581,7 @@ class InteractiveRunSession:
             self.process.stdin.write(answer + "\n")
             self.process.stdin.flush()
             with self.lock:
-                self.output += answer + "\n"
+                self.raw_output += answer + "\n"
                 self.tail = (self.tail + answer + "\n")[-300:]
                 self._parse_recent_output_locked()
         except Exception:
@@ -533,17 +607,25 @@ class InteractiveRunSession:
         self.response_event.set()
 
     def _parse_recent_output_locked(self):
-        for line in self.output.splitlines()[-20:]:
+        for line in self.raw_output.splitlines()[-20:]:
             if line.startswith("Output file will be: "):
                 possible_path = Path(line.split("Output file will be: ", 1)[1].strip())
-                if possible_path.exists():
-                    self.generated_file = possible_path
+                self.generated_file = possible_path
             elif "written to '" in line:
                 match = re.search(r"written to '([^']+)'", line)
                 if match:
                     possible_path = Path(match.group(1))
-                    if possible_path.exists():
-                        self.generated_file = possible_path
+                    self.generated_file = possible_path
+
+    def _flush_display_line_locked(self):
+        line = strip_ansi(self.display_line_buffer)
+        self.display_line_buffer = ""
+        cleaned = line.strip()
+        if not cleaned:
+            return
+        if not should_include_web_output_line(cleaned):
+            return
+        self.display_output += cleaned + "\n"
 
     def artifact_url(self):
         if not self.generated_file or not self.generated_file.exists():
@@ -564,7 +646,7 @@ class InteractiveRunSession:
                 "status": self.status,
                 "finished": self.finished,
                 "exit_code": self.exit_code,
-                "output": self.output,
+                "output": self.display_output,
                 "prompt": self.current_prompt,
                 "artifact_path": artifact_path,
                 "artifact_kind": artifact_kind,
@@ -714,7 +796,7 @@ def render_page(form, status="Ready."):
 <body>
   <div class="page">
     <h1>Spotify Playlist Picker Web</h1>
-    <p class="hint">Run the picker in a live web terminal, answer follow-up prompts in place, and preview generated HTML output directly below.</p>
+    <p class="hint">Run the picker in a live browser log, answer follow-up prompts in place, and preview generated HTML output directly below.</p>
     <p class="hint">{escape(RUNTIME_SETUP_MESSAGE)}</p>
 
     <form method="post" action="/save" class="card" id="settings-form">
@@ -850,18 +932,9 @@ def render_page(form, status="Ready."):
         </div>
       </div>
 
-      <div id="link-section">
-        <h3 class="section-title">Link Lookup</h3>
-        <p class="section-copy">Choose whether the resulting songs should include Spotify search links, YouTube links, both, or no links.</p>
-        <div class="grid">
-          <label for="link_choice">Link lookup</label>
-          <select id="link_choice" name="link_choice">
-            <option{option(form['link_choice'], 'No links')}>No links</option>
-            <option{option(form['link_choice'], 'Spotify search links')}>Spotify search links</option>
-            <option{option(form['link_choice'], 'YouTube links')}>YouTube links</option>
-            <option{option(form['link_choice'], 'Both Spotify search and YouTube')}>Both Spotify search and YouTube</option>
-          </select>
-        </div>
+      <div style="margin-top: 18px;">
+        <h3 class="section-title" style="margin-top: 0;">Song Links</h3>
+        <p class="section-copy" style="margin-bottom: 0;">Spotify search links and YouTube links are added automatically on every run.</p>
       </div>
 
       <div id="output-format-section">
@@ -901,13 +974,14 @@ def render_page(form, status="Ready."):
     </div>
 
     <div class="card">
-      <h2>Live Terminal</h2>
+      <h2>Run Log</h2>
       <pre id="terminal-output"></pre>
     </div>
 
     <div class="card hidden" id="artifact-card">
       <h2>Generated File</h2>
       <div class="row" id="artifact-actions"></div>
+      <p class="hint hidden" id="artifact-note"></p>
       <iframe id="artifact-frame" class="hidden"></iframe>
     </div>
 
@@ -954,6 +1028,7 @@ def render_page(form, status="Ready."):
     const promptInput = document.getElementById("prompt-input");
     const artifactCard = document.getElementById("artifact-card");
     const artifactActions = document.getElementById("artifact-actions");
+    const artifactNote = document.getElementById("artifact-note");
     const artifactFrame = document.getElementById("artifact-frame");
     const existingGeneratedList = document.getElementById("existing-generated-list");
 
@@ -1006,6 +1081,8 @@ def render_page(form, status="Ready."):
       const hasArtifact = Boolean(data.artifact_url);
       setHidden(artifactCard, !hasArtifact);
       artifactActions.innerHTML = "";
+      artifactNote.textContent = "";
+      artifactNote.classList.add("hidden");
       artifactFrame.classList.add("hidden");
       artifactFrame.removeAttribute("src");
 
@@ -1029,6 +1106,9 @@ def render_page(form, status="Ready."):
       if (data.artifact_kind === "html") {{
         artifactFrame.src = data.artifact_url;
         artifactFrame.classList.remove("hidden");
+      }} else if (data.artifact_kind === "txt") {{
+        artifactNote.textContent = "Your text file is ready. Use the open button above to view it.";
+        artifactNote.classList.remove("hidden");
       }}
     }}
 

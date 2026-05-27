@@ -9,7 +9,7 @@ It can:
 - filter your playlists by name with a Rediscover preset, plain text, or regex
 - discover songs from public web sources using YouTube playlists and YouTube track search
 - use `random-song.com` inside `Surprise me` for truly random song discovery
-- look up Spotify search links, YouTube links, or both
+- automatically add Spotify search links and YouTube links
 - export results to `.txt` or `.html`
 - create a new private Spotify playlist from the selected songs
 
@@ -122,7 +122,7 @@ The web app lets people:
 - enter Spotify app credentials once and save them locally
 - move through the same decision flow as the terminal app without seeing every option at once
 - choose common playlist/search options from dropdowns
-- watch the run happen in a live web terminal instead of waiting for one final dump
+- watch the run happen in a cleaner live web log instead of waiting for one final dump
 - answer follow-up prompts like cache refresh, playlist creation, and playlist naming directly in the browser
 - preview generated HTML output inside the web app and open generated files from there
 - recognize existing local files in `generated/` and list them in the browser for reopening
@@ -244,7 +244,7 @@ Useful flows:
 - `5` and the public `Surprise me` mode both support minimum and maximum playlist-size filters
 - `6` includes public-discovery surprise mode plus two `random-song.com` modes
 - public discovery can limit playlists to a size range with both minimum and maximum song counts
-- after songs are chosen, you can optionally look up `Spotify` search links, `YouTube` links, or both
+- after songs are chosen, the app automatically adds `Spotify` search links and `YouTube` links
 - public discovery can still generate terminal, text, or HTML output even if you do not log into Spotify
 
 ## Notes

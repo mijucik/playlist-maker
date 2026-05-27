@@ -1085,27 +1085,6 @@ def attach_platform_links(selected_songs, link_platform):
             song['youtube_found_exact_video'] = found_exact_video
 
 
-def prompt_for_link_platform():
-    while True:
-        print("Do you want to look up links for the selected songs?")
-        print("1. No links")
-        print("2. Spotify links/search pages")
-        print("3. YouTube links")
-        print("4. Both Spotify and YouTube")
-        link_choice = input("Enter 1, 2, 3, or 4: ").strip()
-
-        if link_choice == '1':
-            return None
-        if link_choice == '2':
-            return 'spotify'
-        if link_choice == '3':
-            return 'youtube'
-        if link_choice == '4':
-            return 'both'
-
-        print("Invalid choice.")
-
-
 def maybe_open_platform_links(selected_songs, link_platform):
     if not link_platform:
         return
@@ -1949,7 +1928,7 @@ def print_project_summary():
     print("- Can filter your own playlists by name using a preset, simple text, or regex.")
     print("- Can use random-song.com for truly random Spotify track discovery.")
     print("- Can discover songs from public web sources like YouTube playlists and YouTube track search without leaning on Spotify's API.")
-    print("- Can look up selected songs on Spotify search pages, YouTube, or both.")
+    print("- Automatically adds Spotify search pages and YouTube links for the selected songs.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
 
@@ -2048,27 +2027,6 @@ def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reaso
         'source_description': build_no_spotify_surprise_fallback_source_description(fallback_keywords),
         'source_choice': '6',
     }
-
-
-def maybe_fallback_link_lookup(selected_songs, original_link_platform, failure_reason):
-    print(f"Spotify link lookup became unavailable: {failure_reason}")
-
-    if original_link_platform == 'both':
-        print("Continuing with YouTube links only for this run.")
-        attach_platform_links(selected_songs, 'youtube')
-        return 'youtube'
-
-    if original_link_platform == 'spotify':
-        wants_youtube = prompt_yes_no(
-            "Do you want to try YouTube links instead? (yes/no): "
-        )
-        if wants_youtube:
-            attach_platform_links(selected_songs, 'youtube')
-            return 'youtube'
-        print("Continuing without song links.")
-        return None
-
-    return original_link_platform
 
 
 def main():
@@ -2288,12 +2246,8 @@ def main():
 
     num_songs = len(selected_songs)
 
-    link_platform = prompt_for_link_platform()
-    if link_platform:
-        try:
-            attach_platform_links(selected_songs, link_platform)
-        except (RunAborted, SpotifyApiUnavailableError) as error:
-            link_platform = maybe_fallback_link_lookup(selected_songs, link_platform, error)
+    link_platform = 'both'
+    attach_platform_links(selected_songs, link_platform)
 
     if num_songs == 1:
         # Output the single song
