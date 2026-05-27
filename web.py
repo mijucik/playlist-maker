@@ -56,6 +56,12 @@ INTERACTIVE_PROMPTS = {
         "choices": [],
         "placeholder": "Playlist name",
     },
+    "Do you want to switch to a web-only Surprise Me fallback instead? (yes/no): ": {
+        "id": "no_spotify_fallback",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
     "Do you want to switch to a no-Spotify-API Surprise Me fallback instead? (yes/no): ": {
         "id": "no_spotify_fallback",
         "type": "choice",
@@ -194,7 +200,7 @@ def build_default_form_data():
         "max_playlists": "10",
         "min_playlist_size": "",
         "max_playlist_size": "",
-        "discovery_mode": "Hybrid",
+        "discovery_mode": "Hybrid web-only",
         "keywords": "",
         "surprise_mode": "Random emotions/genres via public discovery",
         "random_genre": "random",
@@ -249,10 +255,12 @@ def build_initial_cli_answers(form):
         lines.append(form["max_playlist_size"].strip())
         lines.append({
             "Hybrid": "1",
-            "Spotify public playlists": "2",
-            "YouTube playlists": "3",
-            "Track search only": "4",
-            "No Spotify API": "5",
+            "Hybrid web-only": "1",
+            "YouTube playlists only": "2",
+            "YouTube playlists": "2",
+            "Track search only": "3",
+            "Track search only (YouTube web search)": "3",
+            "No Spotify API": "1",
         }[form["discovery_mode"]])
         lines.append(form["keywords"].strip())
 
@@ -270,10 +278,12 @@ def build_initial_cli_answers(form):
             lines.append(form["max_playlist_size"].strip())
             lines.append({
                 "Hybrid": "1",
-                "Spotify public playlists": "2",
-                "YouTube playlists": "3",
-                "Track search only": "4",
-                "No Spotify API": "5",
+                "Hybrid web-only": "1",
+                "YouTube playlists only": "2",
+                "YouTube playlists": "2",
+                "Track search only": "3",
+                "Track search only (YouTube web search)": "3",
+                "No Spotify API": "1",
             }[form["discovery_mode"]])
         elif surprise_choice == "3":
             lines.append(form["random_genre"].strip() or "random")
@@ -284,8 +294,10 @@ def build_initial_cli_answers(form):
 
     lines.append({
         "No links": "1",
+        "Spotify search links": "2",
         "Spotify links": "2",
         "YouTube links": "3",
+        "Both Spotify search and YouTube": "4",
         "Both Spotify and YouTube": "4",
     }[form["link_choice"]])
 
@@ -302,9 +314,6 @@ def build_initial_cli_answers(form):
 
 def form_requires_spotify_credentials(form):
     source = form["source"]
-    discovery_mode = form["discovery_mode"]
-    surprise_mode = form["surprise_mode"]
-    link_choice = form["link_choice"]
 
     if source in {
         "All playlists",
@@ -312,18 +321,6 @@ def form_requires_spotify_credentials(form):
         "Your own playlists",
         "Random saved playlists",
     }:
-        return True
-
-    if source == "Public discovery" and discovery_mode != "No Spotify API":
-        return True
-
-    if source == "Surprise me":
-        if surprise_mode == "Random emotions/genres via public discovery" and discovery_mode != "No Spotify API":
-            return True
-        if surprise_mode in {"random-song.com default", "random-song.com custom"}:
-            return False
-
-    if link_choice in {"Spotify links", "Both Spotify and YouTube"}:
         return True
 
     return False
@@ -722,7 +719,7 @@ def render_page(form, status="Ready."):
 
     <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
-      <p class="section-copy">These are required for personal-playlist features, Spotify link lookup, and playlist creation. They are optional for the public `No Spotify API` discovery mode.</p>
+      <p class="section-copy">These are required for personal-playlist features and Spotify playlist creation. Public discovery and song-link output now work without Spotify app credentials.</p>
       <div class="grid">
         <label for="client_id">Client ID</label>
         <input id="client_id" name="client_id" value="{escape(form['client_id'])}">
@@ -804,7 +801,7 @@ def render_page(form, status="Ready."):
 
       <div id="public-discovery-options-section">
         <h3 class="section-title">Public Discovery Settings</h3>
-        <p class="section-copy">These settings control how many public playlists are considered and what size range they must fall into. Use `No Spotify API` when you want a public run that can still finish without Spotify auth.</p>
+        <p class="section-copy">These settings control how many public source playlists are considered and what size range they must fall into. Public discovery now avoids Spotify's API by default and uses web-based sources instead.</p>
         <div class="grid">
           <label for="max_playlists">Max playlists</label>
           <input id="max_playlists" name="max_playlists" value="{escape(form['max_playlists'])}">
@@ -817,11 +814,9 @@ def render_page(form, status="Ready."):
 
           <label for="discovery_mode">Discovery mode</label>
           <select id="discovery_mode" name="discovery_mode">
-            <option{option(form['discovery_mode'], 'Hybrid')}>Hybrid</option>
-            <option{option(form['discovery_mode'], 'Spotify public playlists')}>Spotify public playlists</option>
-            <option{option(form['discovery_mode'], 'YouTube playlists')}>YouTube playlists</option>
-            <option{option(form['discovery_mode'], 'Track search only')}>Track search only</option>
-            <option{option(form['discovery_mode'], 'No Spotify API')}>No Spotify API</option>
+            <option{option(form['discovery_mode'], 'Hybrid web-only')}>Hybrid web-only</option>
+            <option{option(form['discovery_mode'], 'YouTube playlists only')}>YouTube playlists only</option>
+            <option{option(form['discovery_mode'], 'Track search only (YouTube web search)')}>Track search only (YouTube web search)</option>
           </select>
         </div>
       </div>
@@ -857,14 +852,14 @@ def render_page(form, status="Ready."):
 
       <div id="link-section">
         <h3 class="section-title">Link Lookup</h3>
-        <p class="section-copy">Choose whether the resulting songs should include Spotify links, YouTube links, both, or no links.</p>
+        <p class="section-copy">Choose whether the resulting songs should include Spotify search links, YouTube links, both, or no links.</p>
         <div class="grid">
           <label for="link_choice">Link lookup</label>
           <select id="link_choice" name="link_choice">
             <option{option(form['link_choice'], 'No links')}>No links</option>
-            <option{option(form['link_choice'], 'Spotify links')}>Spotify links</option>
+            <option{option(form['link_choice'], 'Spotify search links')}>Spotify search links</option>
             <option{option(form['link_choice'], 'YouTube links')}>YouTube links</option>
-            <option{option(form['link_choice'], 'Both Spotify and YouTube')}>Both Spotify and YouTube</option>
+            <option{option(form['link_choice'], 'Both Spotify search and YouTube')}>Both Spotify search and YouTube</option>
           </select>
         </div>
       </div>

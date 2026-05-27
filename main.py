@@ -35,9 +35,7 @@ DEFAULT_REDIRECT_URI = "http://127.0.0.1:8080/callback"
 SCOPE = "user-read-private playlist-read-private playlist-modify-private playlist-modify-public"
 RANDOM_SONG_API_BASE_URL = "https://europe-west1-randommusicgenerator-34646.cloudfunctions.net/appV2"
 REQUIRED_SCOPE_SET = set(SCOPE.split())
-SPOTIFY_PLAYLIST_SEARCH_LIMIT = 10
 DEFAULT_PUBLIC_DISCOVERY_MODE = "hybrid"
-SPOTIFY_PUBLIC_TRACK_API_BLOCKED = False
 YOUTUBE_SEARCH_RESULT_LIMIT = 20
 SPOTIFY_MATCH_CACHE = {}
 SPOTIFY_MIN_INTERVAL_SECONDS = 0.2
@@ -1017,6 +1015,12 @@ def build_youtube_search_url(song):
     return f"https://www.youtube.com/results?search_query={encoded_query}"
 
 
+def build_spotify_search_url(song):
+    query = f"{song['title']} {song['artists']}".strip()
+    encoded_query = urllib.parse.quote(query)
+    return f"https://open.spotify.com/search/{encoded_query}"
+
+
 def find_youtube_url(song):
     search_url = build_youtube_search_url(song)
     request = urllib.request.Request(
@@ -1045,11 +1049,7 @@ def find_spotify_url(song):
     if song.get('spotify_url'):
         return song.get('spotify_url'), song.get('spotify_found_exact_track', True)
 
-    spotify_match = resolve_song_on_spotify(song)
-    if not spotify_match:
-        return None, False
-
-    return spotify_match.get('spotify_url'), spotify_match.get('spotify_found_exact_track', False)
+    return build_spotify_search_url(song), False
 
 
 def find_spotify_track_for_song(song):
@@ -1071,14 +1071,11 @@ def find_spotify_track_for_song(song):
 
 def attach_platform_links(selected_songs, link_platform):
     if link_platform in {'spotify', 'both'}:
-        if spotify_app_credentials_configured() or any(song.get('spotify_url') for song in selected_songs):
-            print("Looking up Spotify links for the selected songs...")
-            for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
-                spotify_url, found_exact_track = find_spotify_url(song)
-                song['spotify_url'] = spotify_url
-                song['spotify_found_exact_track'] = found_exact_track
-        else:
-            print("Skipping Spotify link lookup because no Spotify app credentials are configured for this run.")
+        print("Building Spotify links/search pages for the selected songs...")
+        for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
+            spotify_url, found_exact_track = find_spotify_url(song)
+            song['spotify_url'] = spotify_url
+            song['spotify_found_exact_track'] = found_exact_track
 
     if link_platform in {'youtube', 'both'}:
         print("Looking up YouTube links for the selected songs...")
@@ -1092,7 +1089,7 @@ def prompt_for_link_platform():
     while True:
         print("Do you want to look up links for the selected songs?")
         print("1. No links")
-        print("2. Spotify links")
+        print("2. Spotify links/search pages")
         print("3. YouTube links")
         print("4. Both Spotify and YouTube")
         link_choice = input("Enter 1, 2, 3, or 4: ").strip()
@@ -1158,103 +1155,6 @@ def maybe_open_platform_links(selected_songs, link_platform):
             opened_count += 1
 
     print(f"Opened {opened_count} link(s) in your browser.")
-
-
-# Function to search public playlists by multiple keywords/phrases in combinations
-def search_public_playlists_by_keywords(
-    keywords,
-    max_playlists,
-    min_playlist_size=None,
-    max_playlist_size=None,
-    candidate_multiplier=5,
-):
-    spotify_client = get_spotify_client(
-        required=False,
-        prompt_if_missing=False,
-        context="Spotify public playlist discovery",
-    )
-    if spotify_client is None:
-        return []
-
-    playlists = []
-    target_candidate_count = max(max_playlists * candidate_multiplier, max_playlists)
-
-    # Generate unique single-keyword and pairwise search combinations.
-    keyword_combinations = []
-    seen_combinations = set()
-    for i in range(len(keywords)):
-        for j in range(i, len(keywords)):
-            if i != j:
-                combined_keywords = f"{keywords[i]} {keywords[j]}"
-                if combined_keywords not in seen_combinations:
-                    keyword_combinations.append(combined_keywords)
-                    seen_combinations.add(combined_keywords)
-            if keywords[i] not in seen_combinations:
-                keyword_combinations.append(keywords[i])
-                seen_combinations.add(keywords[i])
-
-    # Now rotate through combinations of keywords
-    for keyword_combo in keyword_combinations:
-        print(f"Searching for playlists with the combination: {keyword_combo}")
-        results = spotify_client.search(
-            q=keyword_combo,
-            type='playlist',
-            limit=min(target_candidate_count, SPOTIFY_PLAYLIST_SEARCH_LIMIT),
-        )
-        playlist_results = results.get('playlists', {})
-
-        if 'items' in playlist_results:
-            playlists.extend(
-                playlist
-                for playlist in playlist_results['items']
-                if isinstance(playlist, dict) and playlist.get('id')
-            )
-
-        # Handle pagination for more playlists
-        while playlist_results.get('next') and len(playlists) < target_candidate_count:
-            results = spotify_client.next(playlist_results)
-            playlist_results = results
-            if 'items' in results:
-                playlists.extend(
-                    playlist
-                    for playlist in results['items']
-                    if isinstance(playlist, dict) and playlist.get('id')
-                )
-            if len(playlists) >= target_candidate_count:
-                break
-
-    # Remove duplicates based on playlist ID
-    unique_playlists = list({p['id']: p for p in playlists}.values())
-
-    if min_playlist_size is not None or max_playlist_size is not None:
-        filtered_playlists = []
-        skipped_playlists = 0
-        for playlist in unique_playlists:
-            total_tracks = playlist.get('tracks', {}).get('total')
-            if not isinstance(total_tracks, int):
-                skipped_playlists += 1
-                continue
-
-            if min_playlist_size is not None and total_tracks < min_playlist_size:
-                skipped_playlists += 1
-                continue
-
-            if max_playlist_size is not None and total_tracks > max_playlist_size:
-                skipped_playlists += 1
-                continue
-
-            if isinstance(total_tracks, int):
-                filtered_playlists.append(playlist)
-        unique_playlists = filtered_playlists
-        size_bits = []
-        if min_playlist_size is not None:
-            size_bits.append(f"fewer than {min_playlist_size}")
-        if max_playlist_size is not None:
-            size_bits.append(f"more than {max_playlist_size}")
-        print(f"Skipped {skipped_playlists} public playlists outside the requested size range ({' or '.join(size_bits)} songs).")
-
-    print(f"Found {len(unique_playlists)} public playlists for keyword combinations: {', '.join(keywords)}")
-    return unique_playlists
 
 
 def build_keyword_combinations(keywords):
@@ -1323,126 +1223,6 @@ def merge_song_candidates(song_map, songs, source_label):
             existing = song_map[song_key]
             if source_label not in existing.setdefault('discovery_sources', []):
                 existing['discovery_sources'].append(source_label)
-
-
-def extract_spotify_track_ids_from_playlist_page(playlist_id):
-    playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
-    try:
-        html_text = fetch_text(playlist_url)
-    except Exception as error:
-        print(f"Could not load Spotify playlist page for {playlist_id}: {error}")
-        return [], None
-
-    playlist_name_match = re.search(r'<meta property="og:title" content="([^"]+)"', html_text)
-    playlist_name = html.unescape(playlist_name_match.group(1)).strip() if playlist_name_match else None
-    track_urls = re.findall(r'<meta name="music:song" content="https://open\.spotify\.com/track/([^"?]+)', html_text)
-    return track_urls, playlist_name
-
-
-def fetch_spotify_track_metadata_from_page(track_id):
-    track_url = f"https://open.spotify.com/track/{track_id}"
-    try:
-        html_text = fetch_text(track_url)
-    except Exception as error:
-        print(f"Could not load Spotify track page for {track_id}: {error}")
-        return None
-
-    title_match = re.search(r'<meta property="og:title" content="([^"]+)"', html_text)
-    artist_match = re.search(r'<meta name="music:musician_description" content="([^"]+)"', html_text)
-    if not title_match or not artist_match:
-        return None
-
-    return {
-        'title': html.unescape(title_match.group(1)).strip() or 'Unknown Title',
-        'artists': html.unescape(artist_match.group(1)).strip() or 'Unknown Artist',
-        'spotify_url': track_url,
-        'spotify_found_exact_track': True,
-    }
-
-
-def fetch_songs_from_spotify_public_playlist_pages(
-    playlists,
-    max_playlists,
-    max_tracks_per_playlist,
-    min_playlist_size=None,
-    max_playlist_size=None,
-):
-    global SPOTIFY_PUBLIC_TRACK_API_BLOCKED
-    spotify_client = get_spotify_client(
-        required=False,
-        prompt_if_missing=False,
-        context="Spotify public track metadata enrichment",
-    )
-    song_list = []
-    playlists_used = 0
-    for playlist in playlists:
-        if playlists_used >= max_playlists:
-            break
-
-        playlist_id = playlist.get('id')
-        if not playlist_id:
-            continue
-
-        playlist_name = playlist.get('name') or playlist_id
-        print(f"Scraping tracks from Spotify public playlist page: {playlist_name}")
-        track_ids, scraped_playlist_name = extract_spotify_track_ids_from_playlist_page(playlist_id)
-        if not track_ids:
-            continue
-
-        playlist_name = scraped_playlist_name or playlist_name
-        if min_playlist_size is not None and len(track_ids) < min_playlist_size:
-            print(f"Skipping Spotify playlist '{playlist_name}' because it has only {len(track_ids)} songs.")
-            continue
-
-        if max_playlist_size is not None and len(track_ids) > max_playlist_size:
-            print(f"Skipping Spotify playlist '{playlist_name}' because it has {len(track_ids)} songs.")
-            continue
-
-        limited_track_ids = track_ids[:max_tracks_per_playlist]
-        playlist_songs = []
-        used_page_fallback = SPOTIFY_PUBLIC_TRACK_API_BLOCKED or spotify_client is None
-        for start in range(0, len(limited_track_ids), 50):
-            batch_ids = limited_track_ids[start:start + 50]
-            if SPOTIFY_PUBLIC_TRACK_API_BLOCKED or spotify_client is None:
-                for track_id in batch_ids:
-                    track_song = fetch_spotify_track_metadata_from_page(track_id)
-                    if track_song:
-                        playlist_songs.append(track_song)
-                continue
-
-            try:
-                tracks_response = spotify_client.tracks(batch_ids)
-            except spotipy.exceptions.SpotifyException as error:
-                abort_if_unreasonable_rate_limit_error(error)
-                print(f"Could not resolve Spotify tracks for playlist '{playlist_name}' via API: {error}")
-                print("Falling back to Spotify track-page metadata for the rest of this run.")
-                SPOTIFY_PUBLIC_TRACK_API_BLOCKED = True
-                used_page_fallback = True
-                for track_id in batch_ids:
-                    track_song = fetch_spotify_track_metadata_from_page(track_id)
-                    if track_song:
-                        playlist_songs.append(track_song)
-                continue
-
-            for track in tracks_response.get('tracks', []):
-                if not isinstance(track, dict):
-                    continue
-                track_name = track.get('name') or 'Unknown Title'
-                artists = ', '.join(artist.get('name', 'Unknown Artist') for artist in track.get('artists', []))
-                playlist_songs.append({
-                    'title': track_name,
-                    'artists': artists or 'Unknown Artist',
-                    'spotify_url': track.get('external_urls', {}).get('spotify'),
-                    'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')),
-                })
-
-        if playlist_songs:
-            fallback_note = " using page metadata fallback" if used_page_fallback else ""
-            print(f"Recovered {len(playlist_songs)} song(s) from Spotify public playlist '{playlist_name}'{fallback_note}.")
-            song_list.extend(playlist_songs)
-            playlists_used += 1
-
-    return song_list
 
 
 def search_youtube_playlist_ids_by_keywords(keywords, max_playlists, candidate_multiplier=5):
@@ -1593,7 +1373,6 @@ def fetch_songs_from_youtube_public_playlists(
     max_tracks_per_playlist,
     min_playlist_size=None,
     max_playlist_size=None,
-    require_spotify_verification=True,
 ):
     song_list = []
     playlists_used = 0
@@ -1636,7 +1415,6 @@ def fetch_songs_from_youtube_public_playlists(
 
         playlist_song_count = 0
         skipped_non_song_count = 0
-        skipped_unverified_count = 0
         for video_id, raw_title in unique_entries:
             if playlist_song_count >= max_tracks_per_playlist:
                 break
@@ -1646,29 +1424,16 @@ def fetch_songs_from_youtube_public_playlists(
                 skipped_non_song_count += 1
                 continue
 
-            if require_spotify_verification:
-                verified_song = verify_song_on_spotify(song)
-                if not verified_song:
-                    skipped_unverified_count += 1
-                    continue
-            else:
-                verified_song = dict(song)
-
-            verified_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
-            verified_song['youtube_found_exact_video'] = True
-            song_list.append(verified_song)
+            playlist_song = dict(song)
+            playlist_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
+            playlist_song['youtube_found_exact_video'] = True
+            song_list.append(playlist_song)
             playlist_song_count += 1
 
         if playlist_song_count:
-            verification_note = (
-                "cross-platform song candidate(s)"
-                if require_spotify_verification
-                else "likely song candidate(s) without Spotify verification"
-            )
             print(
-                f"Recovered {playlist_song_count} {verification_note} from YouTube playlist '{playlist_id}'"
-                f", skipped {skipped_non_song_count} likely non-song video(s),"
-                f" and skipped {skipped_unverified_count} title(s) that did not resolve on Spotify."
+                f"Recovered {playlist_song_count} likely song candidate(s) from YouTube playlist '{playlist_id}'"
+                f", skipped {skipped_non_song_count} likely non-song video(s)."
             )
             playlists_used += 1
 
@@ -1748,62 +1513,7 @@ def resolve_song_on_spotify(song, suppress_errors=False):
     return None
 
 
-def verify_song_on_spotify(song):
-    spotify_match = resolve_song_on_spotify(song, suppress_errors=True)
-    if not spotify_match:
-        return None
-
-    verified_song = dict(song)
-    verified_song.update(spotify_match)
-    verified_song['cross_platform_verified'] = True
-    return verified_song
-
-
-def search_spotify_tracks_by_keywords(keywords, max_songs):
-    spotify_client = get_spotify_client(
-        required=False,
-        prompt_if_missing=False,
-        context="Spotify track search",
-    )
-    if spotify_client is None:
-        return []
-
-    song_list = []
-    seen_song_keys = set()
-    keyword_combinations = build_keyword_combinations(keywords)
-
-    for keyword_combo in keyword_combinations:
-        print(f"Searching Spotify tracks with: {keyword_combo}")
-        try:
-            results = spotify_client.search(q=keyword_combo, type='track', limit=min(max_songs, 10))
-        except spotipy.exceptions.SpotifyException as error:
-            abort_if_unreasonable_rate_limit_error(error)
-            print(f"Error searching tracks for '{keyword_combo}': {error}")
-            continue
-
-        tracks = results.get('tracks', {}).get('items', [])
-        for track in tracks:
-            if not isinstance(track, dict):
-                continue
-
-            track_name = track.get('name') or 'Unknown Title'
-            artist_names = [artist.get('name', 'Unknown Artist') for artist in track.get('artists', [])]
-            artists = ', '.join(artist_names)
-            merge_song_list_with_seen(song_list, seen_song_keys, {
-                'title': track_name,
-                'artists': artists,
-                'spotify_url': track.get('external_urls', {}).get('spotify'),
-                'spotify_uri': track.get('uri'),
-                'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')),
-            })
-
-            if len(song_list) >= max_songs:
-                return song_list
-
-    return song_list
-
-
-def search_youtube_videos_by_keywords(keywords, max_songs, require_spotify_verification=True):
+def search_youtube_videos_by_keywords(keywords, max_songs):
     song_list = []
     seen_song_keys = set()
     keyword_combinations = build_keyword_combinations(keywords)
@@ -1821,40 +1531,28 @@ def search_youtube_videos_by_keywords(keywords, max_songs, require_spotify_verif
 
         video_count = 0
         skipped_non_song_count = 0
-        skipped_unverified_count = 0
+        skipped_duplicate_count = 0
         for video_id, raw_title in video_pattern.findall(html_text):
             song = convert_youtube_video_title_to_song(raw_title)
             if not is_likely_youtube_song(song):
                 skipped_non_song_count += 1
                 continue
 
-            accepted_song = None
-            if require_spotify_verification:
-                verified_song = verify_song_on_spotify(song)
-                if not verified_song:
-                    skipped_unverified_count += 1
-                    continue
-                accepted_song = verified_song
-            else:
-                accepted_song = dict(song)
-
+            accepted_song = dict(song)
             accepted_song['youtube_url'] = f"https://www.youtube.com/watch?v={video_id}"
             accepted_song['youtube_found_exact_video'] = True
             if merge_song_list_with_seen(song_list, seen_song_keys, accepted_song):
                 video_count += 1
+            else:
+                skipped_duplicate_count += 1
 
             if video_count >= YOUTUBE_SEARCH_RESULT_LIMIT or len(song_list) >= max_songs:
                 break
 
-        verification_note = (
-            "cross-platform song candidate(s)"
-            if require_spotify_verification
-            else "likely song candidate(s) without Spotify verification"
-        )
         print(
-            f"Recovered {video_count} {verification_note} from YouTube search for '{keyword_combo}'"
+            f"Recovered {video_count} likely song candidate(s) from YouTube search for '{keyword_combo}'"
             f", skipped {skipped_non_song_count} likely non-song result(s),"
-            f" and skipped {skipped_unverified_count} result(s) that did not resolve on Spotify."
+            f" and skipped {skipped_duplicate_count} duplicate result(s)."
         )
 
         if len(song_list) >= max_songs:
@@ -1866,20 +1564,11 @@ def search_youtube_videos_by_keywords(keywords, max_songs, require_spotify_verif
 def search_tracks_by_keywords(
     keywords,
     max_songs,
-    label="Searching Spotify and YouTube tracks directly...",
-    include_spotify=True,
-    require_spotify_verification=True,
+    label="Searching YouTube tracks directly...",
 ):
     print(label)
     song_map = {}
-    if include_spotify:
-        spotify_songs = search_spotify_tracks_by_keywords(keywords, max_songs)
-        merge_song_candidates(song_map, spotify_songs, "spotify-track-search")
-    youtube_songs = search_youtube_videos_by_keywords(
-        keywords,
-        max_songs,
-        require_spotify_verification=require_spotify_verification,
-    )
+    youtube_songs = search_youtube_videos_by_keywords(keywords, max_songs)
     merge_song_candidates(song_map, youtube_songs, "youtube-track-search")
     song_list = list(song_map.values())
     random.shuffle(song_list)
@@ -1889,19 +1578,15 @@ def search_tracks_by_keywords(
 
 def prompt_for_public_discovery_mode():
     print("Choose how public discovery should work:")
-    print("1. Hybrid: Spotify public playlists + YouTube playlists + Spotify/YouTube track search")
-    print("2. Spotify public playlists only")
-    print("3. YouTube playlists only")
-    print("4. Track search only (Spotify + YouTube)")
-    print("5. No Spotify API: YouTube playlists + YouTube track search")
-    discovery_choice = input("Enter 1, 2, 3, 4, or 5 [1]: ").strip() or '1'
+    print("1. Hybrid web-only: YouTube playlists + YouTube track search")
+    print("2. YouTube playlists only")
+    print("3. Track search only (YouTube web search)")
+    discovery_choice = input("Enter 1, 2, or 3 [1]: ").strip() or '1'
 
     mode_map = {
         '1': 'hybrid',
-        '2': 'spotify-playlists-web',
-        '3': 'youtube-playlists-web',
-        '4': 'spotify-track-search',
-        '5': 'web-no-spotify-api',
+        '2': 'youtube-playlists-web',
+        '3': 'youtube-track-search',
     }
     discovery_mode = mode_map.get(discovery_choice)
     if not discovery_mode:
@@ -1912,12 +1597,13 @@ def prompt_for_public_discovery_mode():
 
 def describe_public_discovery_mode(discovery_mode):
     return {
-        'hybrid': 'Hybrid public discovery',
-        'spotify-playlists-web': 'Spotify public playlists',
+        'hybrid': 'Hybrid web-only public discovery',
         'youtube-playlists-web': 'YouTube playlists',
-        'spotify-track-search': 'Spotify and YouTube track search',
-        'web-no-spotify-api': 'YouTube public discovery without Spotify API',
-    }.get(discovery_mode, 'Hybrid public discovery')
+        'youtube-track-search': 'YouTube track search',
+        'spotify-playlists-web': 'YouTube playlists',
+        'spotify-track-search': 'YouTube track search',
+        'web-no-spotify-api': 'Hybrid web-only public discovery',
+    }.get(discovery_mode, 'Hybrid web-only public discovery')
 
 
 # Function to fetch songs from public music sources by keywords/phrases without caching
@@ -1932,37 +1618,18 @@ def fetch_songs_from_public_playlists_by_keywords(
 ):
     print("Starting to fetch songs from public music sources by keywords/phrases...")
     song_map = {}
-    spotify_api_available = False
-    spotify_api_requested = discovery_mode != 'web-no-spotify-api'
-    if spotify_api_requested and spotify_app_credentials_configured():
-        spotify_api_available = spotify_api_is_available("public discovery")
-    elif spotify_api_requested and not spotify_app_credentials_configured():
-        print("No Spotify app credentials are configured for this public discovery run.")
+    legacy_mode_map = {
+        'spotify-playlists-web': 'youtube-playlists-web',
+        'spotify-track-search': 'youtube-track-search',
+        'web-no-spotify-api': 'hybrid',
+    }
+    if discovery_mode in legacy_mode_map:
+        remapped_mode = legacy_mode_map[discovery_mode]
+        print("Legacy Spotify-assisted public discovery has been disabled to avoid Spotify API rate limits.")
+        print(f"Switching this run to {describe_public_discovery_mode(remapped_mode)}.")
+        discovery_mode = remapped_mode
 
-    if spotify_api_requested and not spotify_api_available:
-        print("Spotify API is unavailable for this public discovery run.")
-        print("Continuing with sources that do not require Spotify app API access.")
-
-    if discovery_mode in {'hybrid', 'spotify-playlists-web'} and spotify_api_available:
-        spotify_public_playlists = search_public_playlists_by_keywords(
-            keywords,
-            max_playlists,
-            min_playlist_size=min_playlist_size,
-            max_playlist_size=max_playlist_size,
-        )
-        random.shuffle(spotify_public_playlists)
-        spotify_playlist_songs = fetch_songs_from_spotify_public_playlist_pages(
-            spotify_public_playlists,
-            max_playlists=max_playlists,
-            max_tracks_per_playlist=max_tracks_per_playlist,
-            min_playlist_size=min_playlist_size,
-            max_playlist_size=max_playlist_size,
-        )
-        merge_song_candidates(song_map, spotify_playlist_songs, "spotify-public-playlists")
-    elif discovery_mode == 'spotify-playlists-web':
-        print("Spotify public playlist discovery is not available without Spotify API access for this run.")
-
-    if discovery_mode in {'hybrid', 'youtube-playlists-web', 'web-no-spotify-api'}:
+    if discovery_mode in {'hybrid', 'youtube-playlists-web'}:
         youtube_playlist_ids = search_youtube_playlist_ids_by_keywords(keywords, max_playlists)
         youtube_playlist_songs = fetch_songs_from_youtube_public_playlists(
             youtube_playlist_ids,
@@ -1970,32 +1637,16 @@ def fetch_songs_from_public_playlists_by_keywords(
             max_tracks_per_playlist=max_tracks_per_playlist,
             min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
-            require_spotify_verification=spotify_api_available and discovery_mode != 'web-no-spotify-api',
         )
         merge_song_candidates(song_map, youtube_playlist_songs, "youtube-playlists")
 
-    if discovery_mode in {'hybrid', 'spotify-track-search'}:
+    if discovery_mode in {'hybrid', 'youtube-track-search'}:
         direct_track_songs = search_tracks_by_keywords(
             keywords,
             max_songs,
-            label=(
-                "Searching Spotify and YouTube tracks directly..."
-                if spotify_api_available
-                else "Spotify API is unavailable, so this run will search YouTube directly instead..."
-            ),
-            include_spotify=spotify_api_available,
-            require_spotify_verification=spotify_api_available,
+            label="Searching YouTube tracks directly...",
         )
-        merge_song_candidates(song_map, direct_track_songs, "direct-track-search")
-    elif discovery_mode == 'web-no-spotify-api':
-        direct_track_songs = search_tracks_by_keywords(
-            keywords,
-            max_songs,
-            label="Searching YouTube tracks directly without Spotify API access...",
-            include_spotify=False,
-            require_spotify_verification=False,
-        )
-        merge_song_candidates(song_map, direct_track_songs, "youtube-track-search-no-spotify-api")
+        merge_song_candidates(song_map, direct_track_songs, "youtube-track-search")
 
     song_list = list(song_map.values())
     random.shuffle(song_list)
@@ -2125,7 +1776,7 @@ def prompt_for_playlist_size_range():
 
 def write_song_links_to_console(song, indent=""):
     if song.get('spotify_url'):
-        label = "direct track" if song.get('spotify_found_exact_track') else "search result"
+        label = "direct track" if song.get('spotify_found_exact_track') else "search page"
         print(f"{indent}Spotify ({label}): {song['spotify_url']}")
     if song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
@@ -2134,7 +1785,7 @@ def write_song_links_to_console(song, indent=""):
 
 def write_song_links_to_text_file(song, file_handle, indent=""):
     if song.get('spotify_url'):
-        label = "direct track" if song.get('spotify_found_exact_track') else "search result"
+        label = "direct track" if song.get('spotify_found_exact_track') else "search page"
         file_handle.write(f"{indent}Spotify ({label}): {song['spotify_url']}\n")
     if song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
@@ -2144,7 +1795,7 @@ def write_song_links_to_text_file(song, file_handle, indent=""):
 def build_song_links_html(song):
     links = []
     if song.get('spotify_url'):
-        label = "Open in Spotify" if song.get('spotify_found_exact_track') else "Spotify result"
+        label = "Open in Spotify" if song.get('spotify_found_exact_track') else "Search on Spotify"
         links.append(f"""<a href="{song['spotify_url']}" target="_blank" rel="noopener noreferrer">{label}</a>""")
     if song.get('youtube_url'):
         label = "Watch on YouTube" if song.get('youtube_found_exact_video') else "Search on YouTube"
@@ -2231,7 +1882,7 @@ def prompt_for_keywords():
 def prompt_for_surprise_mode():
     while True:
         print("Choose your Surprise Me mode:")
-        print("1. Random emotions/genres searched through public playlists")
+        print("1. Random emotions/genres via public discovery")
         print("2. random-song.com with its default random configuration")
         print("3. random-song.com with custom configuration")
         surprise_mode = input("Enter 1, 2, or 3: ").strip()
@@ -2297,8 +1948,8 @@ def print_project_summary():
     print("- Randomly picks one or more songs from that pool.")
     print("- Can filter your own playlists by name using a preset, simple text, or regex.")
     print("- Can use random-song.com for truly random Spotify track discovery.")
-    print("- Can discover songs from public Spotify playlist pages, YouTube playlists, and direct Spotify/YouTube track search.")
-    print("- Can look up selected songs on Spotify, YouTube, or both.")
+    print("- Can discover songs from public web sources like YouTube playlists and YouTube track search without leaning on Spotify's API.")
+    print("- Can look up selected songs on Spotify search pages, YouTube, or both.")
     print("- Can save the selection to text or HTML output.")
     print("- Can create a new private Spotify playlist from the selected songs.\n")
 
@@ -2322,7 +1973,7 @@ def fetch_public_discovery_with_auto_fallback(
     min_playlist_size,
     max_playlist_size,
     discovery_mode,
-):
+    ):
     effective_mode = discovery_mode
     try:
         song_list = fetch_songs_from_public_playlists_by_keywords(
@@ -2336,12 +1987,12 @@ def fetch_public_discovery_with_auto_fallback(
         )
         return song_list, effective_mode
     except (RunAborted, SpotifyApiUnavailableError) as error:
-        if discovery_mode == 'web-no-spotify-api':
+        if discovery_mode == DEFAULT_PUBLIC_DISCOVERY_MODE:
             raise
 
         print(f"Spotify became unavailable during {describe_public_discovery_mode(discovery_mode)}: {error}")
-        print("Switching this run to the no-Spotify-API public discovery fallback.")
-        effective_mode = 'web-no-spotify-api'
+        print("Switching this run to the web-only public discovery fallback.")
+        effective_mode = DEFAULT_PUBLIC_DISCOVERY_MODE
         song_list = fetch_songs_from_public_playlists_by_keywords(
             keywords,
             max_playlists=max_playlists,
@@ -2355,13 +2006,13 @@ def fetch_public_discovery_with_auto_fallback(
 
 
 def build_no_spotify_surprise_fallback_source_description(keywords):
-    return f"Fallback Surprise Me (No Spotify API via YouTube public discovery for {', '.join(keywords)})"
+    return f"Fallback Surprise Me (Web-only public discovery for {', '.join(keywords)})"
 
 
 def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reason):
     print(f"Spotify became unavailable for this source: {failure_reason}")
     wants_fallback = prompt_yes_no(
-        "Do you want to switch to a no-Spotify-API Surprise Me fallback instead? (yes/no): "
+        "Do you want to switch to a web-only Surprise Me fallback instead? (yes/no): "
     )
     if not wants_fallback:
         return None
@@ -2370,7 +2021,7 @@ def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reaso
     max_songs = 20 * max_playlists
     max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
     fallback_keywords = random.sample(EMOTIONS_GENRES, 3)
-    print("Switching to the no-Spotify-API fallback with random emotions/genres.")
+    print("Switching to the web-only fallback with random emotions/genres.")
     print(f"Random fallback emotions/genres: {', '.join(fallback_keywords)}")
 
     song_list = fetch_songs_from_public_playlists_by_keywords(
@@ -2380,7 +2031,7 @@ def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reaso
         max_tracks_per_playlist=max_tracks_per_playlist,
         min_playlist_size=None,
         max_playlist_size=None,
-        discovery_mode='web-no-spotify-api',
+        discovery_mode=DEFAULT_PUBLIC_DISCOVERY_MODE,
     )
     if not song_list:
         print("The no-Spotify-API fallback did not find any songs.")

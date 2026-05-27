@@ -7,13 +7,13 @@ It can:
 - pull from all of your playlists, only your own playlists, or a random subset
 - limit your personal playlist sources to `any`, `public only`, or `private only`
 - filter your playlists by name with a Rediscover preset, plain text, or regex
-- discover songs from public Spotify playlists, YouTube playlists, and direct Spotify/YouTube track search
+- discover songs from public web sources using YouTube playlists and YouTube track search
 - use `random-song.com` inside `Surprise me` for truly random song discovery
-- look up Spotify links, YouTube links, or both
+- look up Spotify search links, YouTube links, or both
 - export results to `.txt` or `.html`
 - create a new private Spotify playlist from the selected songs
 
-For public discovery, the Spotify-backed modes try to verify YouTube-derived candidates on Spotify. The new `No Spotify API` mode skips that verification and keeps likely-song results from YouTube so the run can still finish without Spotify auth or Spotify Web API quota.
+The public discovery paths are now web-first and avoid Spotify's API entirely. Spotify API access is mainly used for your own playlists and for the final playlist-creation step when the app needs real Spotify track URIs.
 
 ## Fresh Machine Setup
 
@@ -127,7 +127,7 @@ The web app lets people:
 - preview generated HTML output inside the web app and open generated files from there
 - recognize existing local files in `generated/` and list them in the browser for reopening
 - open the local launcher in a browser automatically
-- run the public no-Spotify-API flows even with blank Spotify credentials
+- run the public discovery flows even with blank Spotify credentials
 
 The app also tries to be conservative with Spotify API usage now:
 
@@ -135,9 +135,10 @@ The app also tries to be conservative with Spotify API usage now:
 - it honors Spotify `429` backoff windows when they are short enough to retry automatically
 - if Spotify keeps rate-limiting for too long, the run exits early instead of hammering the API
 - it avoids some unnecessary repeat Spotify lookups when a song already has a Spotify URL or URI
+- public discovery no longer spends Spotify quota on track or playlist search
 
 If Spotify says a retry window is over 2 minutes, the current run stops immediately instead of waiting.
-When that happens during public discovery, the app now switches to the no-Spotify-API fallback automatically when it can. For personal-playlist sources, it offers a no-Spotify-API Surprise Me fallback instead of forcing a full restart.
+For personal-playlist sources, it offers a web-only Surprise Me fallback instead of forcing a full restart.
 The app also disables Spotipy's own long-lived HTTP retry behavior so these fallback decisions happen immediately instead of waiting on Spotify's full `Retry-After` window.
 
 ### 4. Create a Spotify app
@@ -239,17 +240,18 @@ Useful flows:
 - `2` filters your own playlists by `Rediscover`, `contains`, or `regex`
 - `1`, `2`, `3`, and `4` can be limited to `any`, `public only`, or `private only` playlists
 - `5` searches public music sources by keywords
-- `5` supports `hybrid`, `Spotify public playlists`, `YouTube playlists`, direct `Spotify + YouTube` track search, or `No Spotify API`
+- `5` supports `Hybrid web-only`, `YouTube playlists only`, and `Track search only (YouTube web search)`
 - `5` and the public `Surprise me` mode both support minimum and maximum playlist-size filters
 - `6` includes public-discovery surprise mode plus two `random-song.com` modes
 - public discovery can limit playlists to a size range with both minimum and maximum song counts
-- after songs are chosen, you can optionally look up links on `Spotify`, `YouTube`, or both
-- the `No Spotify API` public-discovery mode can still generate terminal, text, or HTML output even if you do not log into Spotify
+- after songs are chosen, you can optionally look up `Spotify` search links, `YouTube` links, or both
+- public discovery can still generate terminal, text, or HTML output even if you do not log into Spotify
 
 ## Notes
 
 - `main.py` is the best entrypoint to use.
 - For most people, playlist-name `contains` matching is simpler than regex. Regex is available when you want more control.
+- Public discovery results often carry YouTube links directly. Spotify links in those flows are usually search pages unless the song already came with an exact Spotify track URL.
 - The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
 - Generated output files and cache files are now ignored by git, so each machine can create its own local data without shipping personal artifacts in the repo.
 - The old root-level `.cache` file was Spotipy's token cache format.
