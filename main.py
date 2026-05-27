@@ -45,6 +45,7 @@ REQUIRED_SCOPE_SET = set(SCOPE.split())
 DEFAULT_PUBLIC_DISCOVERY_MODE = "youtube-music"
 SURPRISE_PUBLIC_DISCOVERY_MAX_ATTEMPTS = 5
 YOUTUBE_MUSIC_SEARCH_LIMIT = 20
+YOUTUBE_MUSIC_MAX_CONSECUTIVE_NET_ERRORS = 2
 YOUTUBE_MUSIC_VIDEO_TYPES = {
     "MUSIC_VIDEO_TYPE_ATV",
     "MUSIC_VIDEO_TYPE_OMV",
@@ -1476,7 +1477,10 @@ def search_youtube_music_playlists_by_keywords(keywords, max_playlists, candidat
                     limit=min(YOUTUBE_MUSIC_SEARCH_LIMIT, target_count),
                 )
             except Exception as error:
-                print(f"Could not search YouTube Music {playlist_filter} for '{keyword_combo}': {error}")
+                print(f"Could not search YouTube Music {playlist_filter} for '{keyword_combo}': {summarise_network_error(error)}")
+                if is_network_down_error(error):
+                    emit_web_status("search", f"Network down — found {len(playlists)} playlist candidate(s).")
+                    return playlists
                 continue
 
             for result in results:
@@ -1499,6 +1503,29 @@ def search_youtube_music_playlists_by_keywords(keywords, max_playlists, candidat
     return playlists
 
 
+def is_network_down_error(error):
+    msg = str(error)
+    return any(s in msg for s in (
+        "NewConnectionError",
+        "Failed to establish a new connection",
+        "Network is unreachable",
+        "Errno -3",
+        "ConnectionRefusedError",
+        "No route to host",
+    ))
+
+
+def summarise_network_error(error):
+    msg = str(error)
+    if "NewConnectionError" in msg or "Failed to establish a new connection" in msg:
+        return "network unreachable"
+    if "Read timed out" in msg or "ReadTimeoutError" in msg:
+        return "read timed out"
+    if "ConnectTimeoutError" in msg:
+        return "connection timed out"
+    return msg.split("\n")[0][:120]
+
+
 def fetch_songs_from_youtube_music_playlists(
     playlists,
     max_playlists,
@@ -1510,6 +1537,7 @@ def fetch_songs_from_youtube_music_playlists(
     youtube_music = get_youtube_music_client()
     song_list = []
     playlists_used = 0
+    consecutive_net_errors = 0
 
     for playlist in playlists:
         if playlists_used >= max_playlists:
@@ -1523,8 +1551,15 @@ def fetch_songs_from_youtube_music_playlists(
                 playlist_id,
                 limit=max(max_tracks_per_playlist, 1),
             )
+            consecutive_net_errors = 0
         except Exception as error:
-            print(f"Could not load YouTube Music playlist '{playlist_title}': {error}")
+            short_err = summarise_network_error(error)
+            print(f"Could not load YouTube Music playlist '{playlist_title}': {short_err}")
+            if is_network_down_error(error):
+                consecutive_net_errors += 1
+                if consecutive_net_errors >= YOUTUBE_MUSIC_MAX_CONSECUTIVE_NET_ERRORS:
+                    print(f"Network appears to be down — stopping search with {len(song_list)} song(s) collected so far.")
+                    break
             continue
 
         if not isinstance(playlist_data, dict):
@@ -1582,7 +1617,10 @@ def search_youtube_music_songs_by_keywords(keywords, max_songs):
                     limit=min(YOUTUBE_MUSIC_SEARCH_LIMIT, max_songs),
                 )
             except Exception as error:
-                print(f"Could not search YouTube Music {search_filter} for '{keyword_combo}': {error}")
+                print(f"Could not search YouTube Music {search_filter} for '{keyword_combo}': {summarise_network_error(error)}")
+                if is_network_down_error(error):
+                    emit_web_status("fallback", f"Network down — found {len(song_list)} song(s) so far.")
+                    return song_list[:max_songs]
                 continue
 
             recovered_count = 0
