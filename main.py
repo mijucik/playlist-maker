@@ -1284,7 +1284,7 @@ def find_spotify_url(song, allow_search_fallback=False):
     return (build_spotify_search_url(song), False) if allow_search_fallback else (None, False)
 
 
-def find_spotify_track_for_song(song):
+def find_spotify_track_for_song(song, spotify_client=None):
     if song.get('spotify_uri'):
         return song['spotify_uri']
 
@@ -1294,11 +1294,42 @@ def find_spotify_track_for_song(song):
             track_id = spotify_url.rstrip('/').split('/')[-1].split('?')[0]
             return f"spotify:track:{track_id}"
 
-    spotify_match = resolve_song_on_spotify(song)
+    spotify_match = resolve_song_on_spotify(song, spotify_client=spotify_client)
     if not spotify_match:
         return None
 
     return spotify_match.get('spotify_uri')
+
+
+def get_spotify_client_for_playlist_creation():
+    if not spotify_app_credentials_configured() and os.getenv("SPOTIFY_PICKER_WEB_STATUS") == "1":
+        message = (
+            "Spotify playlist creation needs Spotify app credentials. "
+            "Add your Client ID and Client Secret in Spotify App Settings, then run again."
+        )
+        print(message)
+        update_run_report(
+            spotify_playlist_status="failed: Spotify credentials not configured",
+            errors=message,
+        )
+        emit_web_status("playlist", message, level="error", reset=True, done=True)
+        return None
+
+    try:
+        return get_spotify_client(
+            required=True,
+            prompt_if_missing=True,
+            context="Spotify playlist creation",
+        )
+    except (RunAborted, SpotifyApiUnavailableError) as error:
+        message = f"Spotify playlist creation needs Spotify API access: {error}"
+        print(message)
+        update_run_report(
+            spotify_playlist_status="failed: Spotify unavailable",
+            errors=message,
+        )
+        emit_web_status("playlist", message, level="error", reset=True, done=True)
+        return None
 
 
 def attach_platform_links(selected_songs, link_platform):
@@ -1956,9 +1987,9 @@ def build_spotify_search_queries(song):
     return queries
 
 
-def resolve_song_on_spotify(song, suppress_errors=False):
+def resolve_song_on_spotify(song, suppress_errors=False, spotify_client=None):
     global SPOTIFY_LINK_MATCHING_DISABLED_REASON
-    spotify_client = get_spotify_search_client(context="Spotify song matching")
+    spotify_client = spotify_client or get_spotify_search_client(context="Spotify song matching")
     if spotify_client is None:
         return None
 
@@ -2039,9 +2070,8 @@ def fetch_songs_from_public_playlists_by_keywords(
 
 
 def create_spotify_playlist(selected_songs):
-    if not spotify_app_credentials_configured():
-        print("Spotify playlist creation is unavailable because no Spotify app credentials are configured for this run.")
-        update_run_report(spotify_playlist_status="skipped: Spotify credentials not configured")
+    spotify_client = get_spotify_client_for_playlist_creation()
+    if spotify_client is None:
         return
 
     # Prompt for playlist name
@@ -2052,7 +2082,7 @@ def create_spotify_playlist(selected_songs):
 
     track_uris = []
     for song in selected_songs:
-        track_uri = find_spotify_track_for_song(song)
+        track_uri = find_spotify_track_for_song(song, spotify_client=spotify_client)
         if track_uri:
             track_uris.append(track_uri)
         else:
@@ -2062,8 +2092,6 @@ def create_spotify_playlist(selected_songs):
         print("No tracks were found to add, so the playlist was not created.")
         update_run_report(spotify_playlist_status="failed: no Spotify tracks found", spotify_playlist_name=playlist_name)
         return
-
-    spotify_client = get_spotify_client(required=True, prompt_if_missing=True, context="Spotify playlist creation")
 
     # Create the playlist only after we know there is something to add.
     try:
