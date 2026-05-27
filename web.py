@@ -718,7 +718,7 @@ class InteractiveRunSession:
             return
         if not should_include_web_output_line(cleaned):
             return
-        self.display_output += cleaned + "\n"
+        self.display_output += line.rstrip() + "\n"
 
     def _record_status_payload_locked(self, raw_payload):
         try:
@@ -777,7 +777,7 @@ class InteractiveRunSession:
             filename = escape(report.get("artifact_name") or self.generated_file.name)
             main_parts.append(f'<p>{kind} file <strong>{filename}</strong> was generated.</p>')
         elif report.get("output_format") == "terminal" or self.display_output.strip():
-            main_parts.append("<p>Songs are printed in the browser above.</p>")
+            main_parts.append("<p>Songs are shown below.</p>")
 
         # Links
         if report.get("links_added"):
@@ -820,7 +820,7 @@ class InteractiveRunSession:
 
         if not main_parts:
             if self.display_output.strip():
-                main_parts.append("<p>Songs are printed in the browser above.</p>")
+                main_parts.append("<p>Songs are shown below.</p>")
             else:
                 main_parts.append("<p>Run complete.</p>")
 

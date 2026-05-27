@@ -634,6 +634,12 @@ def print_cli_rule(char="-"):
     print(char * CLI_WIDTH)
 
 
+def print_cli_label(label, value, indent="  "):
+    if value:
+        print(f"{indent}{label}:")
+        print(f"{indent}  {value}")
+
+
 def print_cli_section(title):
     print()
     print_cli_rule("=")
@@ -2179,26 +2185,66 @@ def write_song_links_to_console(song, indent=""):
     if song.get('spotify_requested'):
         if song.get('spotify_url'):
             label = "direct track" if song.get('spotify_found_exact_track') else "search page"
-            print(f"{indent}Spotify ({label}): {song['spotify_url']}")
+            print_cli_label(f"Spotify ({label})", song['spotify_url'], indent=indent)
         else:
-            print(f"{indent}Spotify: No Spotify link found")
+            print_cli_label("Spotify", "No Spotify link found", indent=indent)
 
     if song.get('youtube_requested') and song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
-        print(f"{indent}YouTube ({label}): {song['youtube_url']}")
+        print_cli_label(f"YouTube ({label})", song['youtube_url'], indent=indent)
+
+
+def print_song_card(index, song):
+    song_title = song['title']
+    song_artists = song['artists']
+    print()
+    print_cli_rule("-")
+    print(f"Song {index}")
+    print_cli_rule("-")
+    print_cli_label("Title", song_title)
+    print_cli_label("Artist", song_artists)
+
+    has_requested_links = song.get('spotify_requested') or song.get('youtube_requested')
+    if has_requested_links:
+        print("  Links:")
+        write_song_links_to_console(song, indent="    ")
+
+
+def write_text_rule(file_handle):
+    file_handle.write("-" * CLI_WIDTH + "\n")
+
+
+def write_text_label(file_handle, label, value, indent="  "):
+    if value:
+        file_handle.write(f"{indent}{label}:\n")
+        file_handle.write(f"{indent}  {value}\n")
 
 
 def write_song_links_to_text_file(song, file_handle, indent=""):
     if song.get('spotify_requested'):
         if song.get('spotify_url'):
             label = "direct track" if song.get('spotify_found_exact_track') else "search page"
-            file_handle.write(f"{indent}Spotify ({label}): {song['spotify_url']}\n")
+            write_text_label(file_handle, f"Spotify ({label})", song['spotify_url'], indent=indent)
         else:
-            file_handle.write(f"{indent}Spotify: No Spotify link found\n")
+            write_text_label(file_handle, "Spotify", "No Spotify link found", indent=indent)
 
     if song.get('youtube_requested') and song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
-        file_handle.write(f"{indent}YouTube ({label}): {song['youtube_url']}\n")
+        write_text_label(file_handle, f"YouTube ({label})", song['youtube_url'], indent=indent)
+
+
+def write_song_card_to_text_file(file_handle, index, song):
+    file_handle.write("\n")
+    write_text_rule(file_handle)
+    file_handle.write(f"Song {index}\n")
+    write_text_rule(file_handle)
+    write_text_label(file_handle, "Title", song['title'])
+    write_text_label(file_handle, "Artist", song['artists'])
+
+    has_requested_links = song.get('spotify_requested') or song.get('youtube_requested')
+    if has_requested_links:
+        file_handle.write("  Links:\n")
+        write_song_links_to_text_file(song, file_handle, indent="    ")
 
 
 def build_song_links_html(song):
@@ -2791,13 +2837,9 @@ def main():
         # Display songs directly in the terminal
         print_cli_section("Selected Songs")
         print(f"Source: {source_description}")
-        print_cli_rule("-")
         for idx, song in enumerate(selected_songs, start=1):
-            song_title = song['title']
-            song_artists = song['artists']
-            print(f"{idx}. {song_title}")
-            print(f"   by {song_artists}")
-            write_song_links_to_console(song, indent="   ")
+            print_song_card(idx, song)
+        print_cli_rule("-")
         if source_choice == '4':
             print(f"\nSelected from playlists: {', '.join(selected_playlists)}")
 
@@ -2836,10 +2878,8 @@ def main():
                             f.write(f"- {plist}\n")
                         f.write("\n")
                     for idx, song in enumerate(selected_songs, start=1):
-                        song_title = song['title']
-                        song_artists = song['artists']
-                        f.write(f"{idx}. {song_title} by {song_artists}\n")
-                        write_song_links_to_text_file(song, f, indent="   ")
+                        write_song_card_to_text_file(f, idx, song)
+                    f.write("\n")
                 print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
                 update_run_report(
                     artifact_path=abs_filepath,
