@@ -2105,15 +2105,25 @@ def prompt_for_num_songs():
 def prompt_for_source_choice():
     while True:
         print("Choose the source of songs:")
-        print("1. All playlists")
-        print("2. Filter your playlists by name")
-        print("3. Your own playlists")
-        print("4. Random saved playlists")
-        print("5. Search YouTube Music by keywords/phrases")
-        print("6. Surprise me")
-        source_choice = input("Enter the number of your choice (1, 2, 3, 4, 5, or 6): ").strip()
-        if source_choice in {'1', '2', '3', '4', '5', '6'}:
+        print("1. My Spotify Playlists")
+        print("2. Public Discovery")
+        print("3. Surprise Me")
+        source_choice = input("Enter 1, 2, or 3: ").strip()
+        if source_choice in {'1', '2', '3'}:
             return source_choice
+        print("Invalid choice.")
+
+
+def prompt_for_playlist_scope():
+    while True:
+        print("How would you like to pick from your playlists?")
+        print("1. All playlists")
+        print("2. Filter by name")
+        print("3. Own playlists only")
+        print("4. Random selection")
+        scope = input("Enter 1, 2, 3, or 4: ").strip()
+        if scope in {'1', '2', '3', '4'}:
+            return scope
         print("Invalid choice.")
 
 
@@ -2369,7 +2379,13 @@ def main():
     print(f"Number of songs to fetch: {num_songs}")
     update_run_report(requested_count=num_songs)
 
-    source_choice = prompt_for_source_choice()
+    top_choice = prompt_for_source_choice()
+    if top_choice == '1':
+        source_choice = prompt_for_playlist_scope()
+    elif top_choice == '2':
+        source_choice = '5'
+    else:  # top_choice == '3'
+        source_choice = '6'
 
     # Default values for max_playlists and max_tracks_per_playlist
     max_playlists = None

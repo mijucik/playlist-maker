@@ -91,19 +91,16 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
 WEB_PROGRESS_RE = re.compile(r"(?:\d+%\||█{2,}|song/s|track/s|playlist/s|it/s)")
 WEB_NOISE_EXACT_LINES = {
     "What this script does:",
+    "1. My Spotify Playlists",
+    "2. Public Discovery",
+    "3. Surprise Me",
     "1. All playlists",
-    "2. Filter your playlists by name",
-    "3. Your own playlists",
-    "4. Random saved playlists",
-    "5. Search YouTube Music by keywords/phrases",
-    "6. Surprise me",
+    "2. Filter by name",
+    "3. Own playlists only",
+    "4. Random selection",
     "1. Random emotions/genres via public discovery",
     "2. random-song.com with its default random configuration",
     "3. random-song.com with custom configuration",
-    "1. No links",
-    "2. Spotify links/search pages",
-    "3. YouTube links",
-    "4. Both Spotify and YouTube",
 }
 WEB_NOISE_PREFIXES = (
     "Spotify credentials are read from",
@@ -114,9 +111,9 @@ WEB_NOISE_PREFIXES = (
     "Do you want one song or more than one?",
     "Number of songs to fetch:",
     "Choose the source of songs:",
+    "How would you like to pick from your playlists?",
     "Enter the number of your choice",
     "Enter 1, 2, or 3",
-    "Enter 1, 2, 3, 4, 5, or 6",
     "Enter 1, 2, 3, or 4",
     "Enter a name for your new playlist:",
     "Enter the maximum number of playlists to search:",
@@ -336,7 +333,8 @@ def build_default_form_data():
         "client_secret": spotify_config.get("client_secret", ""),
         "redirect_uri": spotify_config.get("redirect_uri", DEFAULT_REDIRECT_URI),
         "num_songs": "1",
-        "source": "All playlists",
+        "source": "My Spotify Playlists",
+        "playlist_scope": "All playlists",
         "visibility": "Any visibility",
         "filter_mode": "Rediscover preset",
         "filter_value": "",
@@ -365,47 +363,48 @@ def merge_with_defaults(form_data):
 def build_initial_cli_answers(form):
     lines = [form["num_songs"].strip() or "1"]
 
-    source_choice = {
-        "All playlists": "1",
-        "Filter your playlists by name": "2",
-        "Your own playlists": "3",
-        "Random saved playlists": "4",
-        "Public discovery": "5",
-        "Surprise me": "6",
-    }[form["source"]]
-    lines.append(source_choice)
+    source = form["source"]
 
-    if source_choice in {"1", "2", "3", "4"}:
+    if source == "My Spotify Playlists":
+        lines.append("1")  # top-level: My Spotify Playlists
+        playlist_scope = form.get("playlist_scope", "All playlists")
+        scope_choice = {
+            "All playlists": "1",
+            "Filter by name": "2",
+            "Own playlists only": "3",
+            "Random selection": "4",
+        }.get(playlist_scope, "1")
+        lines.append(scope_choice)
         lines.append({
             "Any visibility": "1",
             "Public only": "2",
             "Private only": "3",
         }[form["visibility"]])
+        if scope_choice == "2":
+            filter_choice = {
+                "Rediscover preset": "1",
+                "Contains text": "2",
+                "Custom regex": "3",
+            }[form["filter_mode"]]
+            lines.append(filter_choice)
+            if filter_choice in {"2", "3"}:
+                lines.append(form["filter_value"].strip())
 
-    if source_choice == "2":
-        filter_choice = {
-            "Rediscover preset": "1",
-            "Contains text": "2",
-            "Custom regex": "3",
-        }[form["filter_mode"]]
-        lines.append(filter_choice)
-        if filter_choice in {"2", "3"}:
-            lines.append(form["filter_value"].strip())
-
-    if source_choice == "5":
+    elif source == "Public discovery":
+        lines.append("2")  # top-level: Public Discovery
         lines.append(form["max_playlists"].strip() or "50")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
         lines.append(form["keywords"].strip())
 
-    if source_choice == "6":
+    elif source == "Surprise me":
+        lines.append("3")  # top-level: Surprise Me
         surprise_choice = {
             "Random emotions/genres via public discovery": "1",
             "random-song.com default": "2",
             "random-song.com custom": "3",
         }[form["surprise_mode"]]
         lines.append(surprise_choice)
-
         if surprise_choice == "1":
             lines.append(form["max_playlists"].strip() or "50")
             lines.append(form["min_playlist_size"].strip())
@@ -423,17 +422,7 @@ def build_initial_cli_answers(form):
 
 
 def form_requires_spotify_credentials(form):
-    source = form["source"]
-
-    if source in {
-        "All playlists",
-        "Filter your playlists by name",
-        "Your own playlists",
-        "Random saved playlists",
-    }:
-        return True
-
-    return False
+    return form["source"] == "My Spotify Playlists"
 
 
 def validate_form(form):
@@ -447,7 +436,11 @@ def validate_form(form):
     except ValueError:
         return "Number of songs must be 'one' or a positive integer."
 
-    if form["source"] == "Filter your playlists by name" and form["filter_mode"] in {"Contains text", "Custom regex"}:
+    if (
+        form["source"] == "My Spotify Playlists"
+        and form.get("playlist_scope") == "Filter by name"
+        and form["filter_mode"] in {"Contains text", "Custom regex"}
+    ):
         if not form["filter_value"].strip():
             return "Enter playlist filter text or regex."
 
@@ -727,35 +720,40 @@ class InteractiveRunSession:
         if "No tracks found." in self.display_output:
             return "No tracks found. Try broader keywords or relax the playlist size limits."
         if report.get("errors") and not report.get("selected_count"):
-            return "\n".join(report["errors"])
+            return escape("; ".join(report["errors"]))
 
-        lines = []
+        main_parts = []
+        notes_parts = []
+
         selected_count = report.get("selected_count")
         source = report.get("source")
         if selected_count is not None:
             song_label = "song" if selected_count == 1 else "songs"
-            source_text = f" from {source}" if source else ""
-            lines.append(f"{selected_count} {song_label}{source_text}.")
+            source_text = f" from {escape(source)}" if source else ""
+            main_parts.append(
+                f'<p class="summary-headline"><strong>{selected_count} {song_label}</strong>{source_text}</p>'
+            )
 
         keywords = report.get("keywords")
         if keywords:
-            lines.append("Keywords: " + ", ".join(keywords))
+            kw_list = ", ".join(escape(k) for k in keywords)
+            main_parts.append(f"<p>Keywords: {kw_list}</p>")
 
         if report.get("max_playlists"):
             min_size = report.get("min_playlist_size")
             max_size = report.get("max_playlist_size")
             if min_size or max_size:
-                size_range = f"size {min_size or 'any'}–{max_size or 'any'} songs/playlist"
+                size_range = f"playlist size {escape(str(min_size or 'any'))}–{escape(str(max_size or 'any'))} songs"
             else:
-                size_range = "no playlist size limits"
-            lines.append(f"Discovery: max {report['max_playlists']} playlists, {size_range}.")
+                size_range = "no size limits"
+            main_parts.append(f"<p>Discovery: up to {escape(str(report['max_playlists']))} playlists, {size_range}</p>")
 
         if self.generated_file and self.generated_file.exists():
-            kind = self.generated_file.suffix.lower().lstrip(".") or "file"
-            filename = report.get("artifact_name") or self.generated_file.name
-            lines.append(f'{kind.upper()} file "{filename}" generated.')
+            kind = self.generated_file.suffix.lower().lstrip(".").upper() or "File"
+            filename = escape(report.get("artifact_name") or self.generated_file.name)
+            main_parts.append(f'<p>{kind} file <strong>"{filename}"</strong> saved</p>')
         elif report.get("output_format") == "terminal" or self.display_output.strip():
-            lines.append("Output printed in browser.")
+            main_parts.append("<p>Songs printed in browser</p>")
 
         if report.get("links_added"):
             exact_links = report.get("spotify_exact_links", 0)
@@ -763,33 +761,41 @@ class InteractiveRunSession:
             youtube_links = report.get("youtube_links", 0)
             link_parts = []
             if exact_links:
-                link_parts.append(f"{exact_links} Spotify exact")
+                link_parts.append(f"{exact_links} Spotify")
             if search_links:
-                link_parts.append(f"{search_links} Spotify search")
+                notes_parts.append(f"<p>{search_links} Spotify search link(s) — exact match not found for those tracks</p>")
             if youtube_links:
                 link_parts.append(f"{youtube_links} YouTube")
             if link_parts:
-                lines.append("Links: " + ", ".join(link_parts) + ".")
+                main_parts.append("<p>Links added: " + ", ".join(link_parts) + "</p>")
 
         playlist_status = report.get("spotify_playlist_status")
         if playlist_status:
             playlist_name = report.get("spotify_playlist_name")
-            if playlist_name:
-                lines.append(f'Playlist "{playlist_name}": {playlist_status}.')
+            status_lower = playlist_status.lower()
+            if any(word in status_lower for word in ("fail", "error", "could not", "unable")):
+                name_part = f' "{escape(playlist_name)}"' if playlist_name else ""
+                notes_parts.append(f"<p>Playlist{name_part}: {escape(playlist_status)}</p>")
             else:
-                lines.append(f"Playlist: {playlist_status}.")
+                name_part = f' "{escape(playlist_name)}"' if playlist_name else ""
+                main_parts.append(f"<p>Playlist{name_part}: {escape(playlist_status)}</p>")
 
         for warning in report.get("warnings", []):
-            lines.append(f"Warning: {warning}")
+            notes_parts.append(f"<p>{escape(warning)}</p>")
         for error in report.get("errors", []):
             if error != "No tracks found.":
-                lines.append(f"Issue: {error}")
+                notes_parts.append(f"<p>{escape(error)}</p>")
 
-        if lines:
-            return "\n".join(lines)
-        if self.display_output.strip():
-            return "Run complete. Songs printed in browser."
-        return "Run complete."
+        if not main_parts:
+            if self.display_output.strip():
+                main_parts.append("<p>Songs printed in browser</p>")
+            else:
+                main_parts.append("<p>Run complete</p>")
+
+        html_out = f'<div class="summary-main">{"".join(main_parts)}</div>'
+        if notes_parts:
+            html_out += f'<div class="summary-notes">{"".join(notes_parts)}</div>'
+        return html_out
 
     def build_summary_kind_locked(self):
         if "No tracks found." in self.display_output:
@@ -1006,14 +1012,25 @@ def render_page(form, status="Ready."):
       padding: 16px;
       background: #faf8ef;
       color: #25372c;
-      font-weight: 650;
-      white-space: pre-wrap;
+      font-weight: 600;
     }}
     .summary-card.error {{
       border-color: #e0b4ad;
       background: #fff5f2;
       color: #9a2d1d;
     }}
+    .summary-main {{ margin: 0; }}
+    .summary-main p {{ margin: 3px 0; }}
+    .summary-headline {{ font-size: 1.05em; font-weight: 700; margin: 0 0 8px; }}
+    .summary-notes {{
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid #d0c8a8;
+      color: #7a5c1e;
+      font-weight: 600;
+      font-size: 0.95em;
+    }}
+    .summary-notes p {{ margin: 3px 0; }}
     @keyframes pulse {{
       0%, 100% {{ opacity: 0.35; transform: scale(0.85); }}
       50% {{ opacity: 1; transform: scale(1.15); }}
@@ -1086,18 +1103,29 @@ def render_page(form, status="Ready."):
 
         <label for="source">Source</label>
         <select id="source" name="source">
-          <option{option(form['source'], 'All playlists')}>All playlists</option>
-          <option{option(form['source'], 'Filter your playlists by name')}>Filter your playlists by name</option>
-          <option{option(form['source'], 'Your own playlists')}>Your own playlists</option>
-          <option{option(form['source'], 'Random saved playlists')}>Random saved playlists</option>
+          <option{option(form['source'], 'My Spotify Playlists')}>My Spotify Playlists</option>
           <option{option(form['source'], 'Public discovery')}>Public discovery</option>
           <option{option(form['source'], 'Surprise me')}>Surprise me</option>
         </select>
       </div>
 
+      <div id="playlist-scope-section">
+        <h3 class="section-title">Playlist Selection</h3>
+        <p class="section-copy">Choose how to pick playlists from your Spotify library.</p>
+        <div class="grid">
+          <label for="playlist_scope">Selection</label>
+          <select id="playlist_scope" name="playlist_scope">
+            <option{option(form['playlist_scope'], 'All playlists')}>All playlists — your entire Spotify library</option>
+            <option{option(form['playlist_scope'], 'Filter by name')}>Filter by name — match by keyword, preset, or regex</option>
+            <option{option(form['playlist_scope'], 'Own playlists only')}>Own playlists only — playlists you created</option>
+            <option{option(form['playlist_scope'], 'Random selection')}>Random selection — sample across your playlists</option>
+          </select>
+        </div>
+      </div>
+
       <div id="visibility-section">
         <h3 class="section-title">Playlist Visibility</h3>
-        <p class="section-copy">Use this when you want to limit personal playlist sources to public playlists, private playlists, or either.</p>
+        <p class="section-copy">Limit to public, private, or any playlist visibility.</p>
         <div class="grid">
           <label for="visibility">Playlist visibility</label>
           <select id="visibility" name="visibility">
@@ -1262,9 +1290,11 @@ def render_page(form, status="Ready."):
     const runRedirectUri = document.getElementById("run-redirect-uri");
     const sourceSelect = document.getElementById("source");
     const numSongsInput = document.getElementById("num_songs");
+    const playlistScopeSelect = document.getElementById("playlist_scope");
     const visibilitySelect = document.getElementById("visibility");
     const filterModeSelect = document.getElementById("filter_mode");
     const surpriseModeSelect = document.getElementById("surprise_mode");
+    const playlistScopeSection = document.getElementById("playlist-scope-section");
     const visibilitySection = document.getElementById("visibility-section");
     const playlistFilterSection = document.getElementById("playlist-filter-section");
     const publicDiscoveryOptionsSection = document.getElementById("public-discovery-options-section");
@@ -1309,14 +1339,18 @@ def render_page(form, status="Ready."):
 
     function updateFlow() {{
       const source = sourceSelect.value;
+      const playlistScope = playlistScopeSelect.value;
       const filterMode = filterModeSelect.value;
       const surpriseMode = surpriseModeSelect.value;
 
-      const usesVisibility = ["All playlists", "Filter your playlists by name", "Your own playlists", "Random saved playlists"].includes(source);
-      setHidden(visibilitySection, !usesVisibility);
-      visibilitySelect.disabled = !usesVisibility;
+      const isMyPlaylists = source === "My Spotify Playlists";
+      setHidden(playlistScopeSection, !isMyPlaylists);
+      playlistScopeSelect.disabled = !isMyPlaylists;
 
-      setHidden(playlistFilterSection, source !== "Filter your playlists by name");
+      setHidden(visibilitySection, !isMyPlaylists);
+      visibilitySelect.disabled = !isMyPlaylists;
+
+      setHidden(playlistFilterSection, !(isMyPlaylists && playlistScope === "Filter by name"));
       setHidden(publicDiscoveryOptionsSection, !(source === "Public discovery" || (source === "Surprise me" && surpriseMode === "Random emotions/genres via public discovery")));
       setHidden(publicKeywordsSection, source !== "Public discovery");
       setHidden(surpriseSection, source !== "Surprise me");
@@ -1346,7 +1380,7 @@ def render_page(form, status="Ready."):
       setHidden(summaryCard, !hasSummary);
 
       if (hasSummary) {{
-        summaryCard.textContent = feed.summary;
+        summaryCard.innerHTML = feed.summary;
         summaryCard.classList.toggle("error", feed.kind === "error");
         return;
       }}
@@ -1550,6 +1584,7 @@ def render_page(form, status="Ready."):
     settingsRedirectUri.addEventListener("input", syncSettingsIntoRunForm);
     sourceSelect.addEventListener("change", updateFlow);
     numSongsInput.addEventListener("input", updateFlow);
+    playlistScopeSelect.addEventListener("change", updateFlow);
     filterModeSelect.addEventListener("change", updateFlow);
     surpriseModeSelect.addEventListener("change", updateFlow);
     advancedDiscoveryToggle.addEventListener("click", () => {{
