@@ -2133,7 +2133,7 @@ def prompt_for_max_playlists():
 
 def prompt_for_keywords():
     while True:
-        keywords_input = input("Enter one or more keywords/phrases (separate by commas or enclose phrases in quotes): ").strip()
+        keywords_input = input('Enter one or more words or phrases, like "happy", "yacht rock", or "summer jazz": ').strip()
         keywords = parse_keywords(keywords_input)
         if keywords:
             return keywords
@@ -2615,108 +2615,99 @@ def main():
     link_platform = 'both'
     attach_platform_links(selected_songs, link_platform)
 
-    if num_songs == 1:
-        update_run_report(output_format="terminal")
-        # Output the single song
-        random_song = selected_songs[0]
-        print(f"\nHere is your song from {source_description}:\n1. {random_song['title']} by {random_song['artists']}")
-        write_song_links_to_console(random_song)
+    # Ask for file format or terminal output
+    file_format = prompt_for_output_format()
+    update_run_report(output_format=file_format)
+
+    if file_format == 'terminal':
+        emit_web_status("output", "Printing songs in the browser summary...", reset=True)
+        # Display songs directly in the terminal
+        print(f"\nYour Selected Songs from {source_description}:\n")
+        for idx, song in enumerate(selected_songs, start=1):
+            song_title = song['title']
+            song_artists = song['artists']
+            print(f"{idx}. {song_title} by {song_artists}")
+            write_song_links_to_console(song, indent="   ")
         if source_choice == '4':
-            print(f"Selected from playlists: {', '.join(selected_playlists)}")
-    else:
-        # Ask for file format or terminal output
-        file_format = prompt_for_output_format()
-        update_run_report(output_format=file_format)
+            print(f"\nSelected from playlists: {', '.join(selected_playlists)}")
 
-        if file_format == 'terminal':
-            emit_web_status("output", "Printing songs in the browser summary...", reset=True)
-            # Display songs directly in the terminal
-            print(f"\nYour Selected Songs from {source_description}:\n")
-            for idx, song in enumerate(selected_songs, start=1):
-                song_title = song['title']
-                song_artists = song['artists']
-                print(f"{idx}. {song_title} by {song_artists}")
-                write_song_links_to_console(song, indent="   ")
-            if source_choice == '4':
-                print(f"\nSelected from playlists: {', '.join(selected_playlists)}")
+    elif file_format == 'n/a':
+        print("Skipping file generation.")
+    elif file_format in ['txt', 'html']:
+        emit_web_status("output", f"Writing {file_format.upper()} file...", reset=True)
+        # Get current date and time
+        now = datetime.now()
+        date_str = now.strftime("%Y.%m.%d at %Hhr%M")
 
-        elif file_format == 'n/a':
-            print("Skipping file generation.")
-        elif file_format in ['txt', 'html']:
-            emit_web_status("output", f"Writing {file_format.upper()} file...", reset=True)
-            # Get current date and time
-            now = datetime.now()
-            date_str = now.strftime("%Y.%m.%d at %Hhr%M")
+        # Sanitize the source description for filenames
+        safe_source_description = sanitize_filename(source_description)
 
-            # Sanitize the source description for filenames
-            safe_source_description = sanitize_filename(source_description)
+        # Create filename with date and source description
+        filename = f"{date_str} - {safe_source_description}.{file_format}"
 
-            # Create filename with date and source description
-            filename = f"{date_str} - {safe_source_description}.{file_format}"
+        # Create 'generated' folder if it doesn't exist
+        output_folder = 'generated'
+        if not os.path.exists(output_folder):
+            try:
+                os.makedirs(output_folder)
+                print(f"Created folder '{output_folder}'.")
+            except Exception as e:
+                print(f"Failed to create folder '{output_folder}': {e}")
+                return
 
-            # Create 'generated' folder if it doesn't exist
-            output_folder = 'generated'
-            if not os.path.exists(output_folder):
+        # Full path to the output file
+        filepath = os.path.join(output_folder, filename)
+        abs_filepath = os.path.abspath(filepath)
+        print(f"Output file will be: {abs_filepath}")
+
+        if file_format == 'txt':
+            # Generate text file
+            try:
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(f"Your Selected Songs from {source_description} (Generated on {date_str}):\n\n")
+                    if source_choice == '4':
+                        f.write(f"Selected from playlists:\n")
+                        for plist in selected_playlists:
+                            f.write(f"- {plist}\n")
+                        f.write("\n")
+                    for idx, song in enumerate(selected_songs, start=1):
+                        song_title = song['title']
+                        song_artists = song['artists']
+                        f.write(f"{idx}. {song_title} by {song_artists}\n")
+                        write_song_links_to_text_file(song, f, indent="   ")
+                print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
+                update_run_report(
+                    artifact_path=abs_filepath,
+                    artifact_name=filename,
+                    artifact_kind="txt",
+                )
+                emit_web_status("output", f'TXT file "{filename}" was generated.', done=True)
+            except Exception as e:
+                print(f"Failed to write to file '{abs_filepath}': {e}")
+                update_run_report(errors=f"TXT file generation failed: {e}")
+                emit_web_status("output", f"Could not write text file: {e}", level="error")
+
+            # Ask if user wants to open the file after .txt generation
+            open_choice = input("Do you want to open the file now? (yes/no): ").strip().lower()
+            if open_choice == 'yes':
                 try:
-                    os.makedirs(output_folder)
-                    print(f"Created folder '{output_folder}'.")
+                    if os.name == 'nt':  # For Windows
+                        os.startfile(filepath)
+                    elif os.name == 'posix':  # For macOS/Linux
+                        if sys.platform == 'darwin':  # macOS
+                            os.system(f'open "{filepath}"')
+                        else:  # Linux
+                            os.system(f'xdg-open "{filepath}"')
+                    else:
+                        print("Unable to open the file automatically on this operating system.")
                 except Exception as e:
-                    print(f"Failed to create folder '{output_folder}': {e}")
-                    return
+                    print(f"Failed to open the file: {e}")
 
-            # Full path to the output file
-            filepath = os.path.join(output_folder, filename)
-            abs_filepath = os.path.abspath(filepath)
-            print(f"Output file will be: {abs_filepath}")
-
-            if file_format == 'txt':
-                # Generate text file
-                try:
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write(f"Your Selected Songs from {source_description} (Generated on {date_str}):\n\n")
-                        if source_choice == '4':
-                            f.write(f"Selected from playlists:\n")
-                            for plist in selected_playlists:
-                                f.write(f"- {plist}\n")
-                            f.write("\n")
-                        for idx, song in enumerate(selected_songs, start=1):
-                            song_title = song['title']
-                            song_artists = song['artists']
-                            f.write(f"{idx}. {song_title} by {song_artists}\n")
-                            write_song_links_to_text_file(song, f, indent="   ")
-                    print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
-                    update_run_report(
-                        artifact_path=abs_filepath,
-                        artifact_name=filename,
-                        artifact_kind="txt",
-                    )
-                    emit_web_status("output", f'TXT file "{filename}" was generated.', done=True)
-                except Exception as e:
-                    print(f"Failed to write to file '{abs_filepath}': {e}")
-                    update_run_report(errors=f"TXT file generation failed: {e}")
-                    emit_web_status("output", f"Could not write text file: {e}", level="error")
-
-                # Ask if user wants to open the file after .txt generation
-                open_choice = input("Do you want to open the file now? (yes/no): ").strip().lower()
-                if open_choice == 'yes':
-                    try:
-                        if os.name == 'nt':  # For Windows
-                            os.startfile(filepath)
-                        elif os.name == 'posix':  # For macOS/Linux
-                            if sys.platform == 'darwin':  # macOS
-                                os.system(f'open "{filepath}"')
-                            else:  # Linux
-                                os.system(f'xdg-open "{filepath}"')
-                        else:
-                            print("Unable to open the file automatically on this operating system.")
-                    except Exception as e:
-                        print(f"Failed to open the file: {e}")
-
-            else:
-                # Generate HTML file
-                try:
-                    readable_date = now.strftime("%B %d, %Y at %I:%M %p")
-                    html_content = f"""<!DOCTYPE html>
+        else:
+            # Generate HTML file
+            try:
+                readable_date = now.strftime("%B %d, %Y at %I:%M %p")
+                html_content = f"""<!DOCTYPE html>
 <html>
 <head>
     <meta charset="UTF-8">
@@ -2753,55 +2744,55 @@ def main():
     <h1>Your Selected Songs</h1>
     <p class="source">Source: {source_description}</p>
 """
-                    if source_choice == '4':
-                        html_content += f"""    <p class="playlists">Selected from playlists: {', '.join(selected_playlists)}</p>
+                if source_choice == '4':
+                    html_content += f"""    <p class="playlists">Selected from playlists: {', '.join(selected_playlists)}</p>
 """
-                    html_content += f"""    <p class="date">Generated on {readable_date}</p>
+                html_content += f"""    <p class="date">Generated on {readable_date}</p>
     <ol>
 """
 
-                    for song in selected_songs:
-                        song_title = song['title']
-                        song_artists = song['artists']
-                        html_content += f"        <li>{song_title} by {song_artists}"
-                        html_links = build_song_links_html(song)
-                        if html_links:
-                            html_content += f"<br>{html_links}"
-                        html_content += "</li>\n"
+                for song in selected_songs:
+                    song_title = song['title']
+                    song_artists = song['artists']
+                    html_content += f"        <li>{song_title} by {song_artists}"
+                    html_links = build_song_links_html(song)
+                    if html_links:
+                        html_content += f"<br>{html_links}"
+                    html_content += "</li>\n"
 
-                    html_content += """    </ol>
+                html_content += """    </ol>
 </body>
 </html>"""
 
-                    with open(filepath, 'w', encoding='utf-8') as f:
-                        f.write(html_content)
-                    print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
-                    update_run_report(
-                        artifact_path=abs_filepath,
-                        artifact_name=filename,
-                        artifact_kind="html",
-                    )
-                    emit_web_status("output", f'HTML file "{filename}" was generated.', done=True)
-                except Exception as e:
-                    print(f"Failed to write to HTML file '{abs_filepath}': {e}")
-                    update_run_report(errors=f"HTML file generation failed: {e}")
-                    emit_web_status("output", f"Could not write HTML file: {e}", level="error")
+                with open(filepath, 'w', encoding='utf-8') as f:
+                    f.write(html_content)
+                print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
+                update_run_report(
+                    artifact_path=abs_filepath,
+                    artifact_name=filename,
+                    artifact_kind="html",
+                )
+                emit_web_status("output", f'HTML file "{filename}" was generated.', done=True)
+            except Exception as e:
+                print(f"Failed to write to HTML file '{abs_filepath}': {e}")
+                update_run_report(errors=f"HTML file generation failed: {e}")
+                emit_web_status("output", f"Could not write HTML file: {e}", level="error")
 
-                # Ask if user wants to open the file after .html generation
-                open_choice = input("Do you want to open the file now? (yes/no): ").strip().lower()
-                if open_choice == 'yes':
-                    try:
-                        if os.name == 'nt':  # For Windows
-                            os.startfile(filepath)
-                        elif os.name == 'posix':  # For macOS/Linux
-                            if sys.platform == 'darwin':  # macOS
-                                os.system(f'open "{filepath}"')
-                            else:  # Linux
-                                os.system(f'xdg-open "{filepath}"')
-                        else:
-                            print("Unable to open the file automatically on this operating system.")
-                    except Exception as e:
-                        print(f"Failed to open the file: {e}")
+            # Ask if user wants to open the file after .html generation
+            open_choice = input("Do you want to open the file now? (yes/no): ").strip().lower()
+            if open_choice == 'yes':
+                try:
+                    if os.name == 'nt':  # For Windows
+                        os.startfile(filepath)
+                    elif os.name == 'posix':  # For macOS/Linux
+                        if sys.platform == 'darwin':  # macOS
+                            os.system(f'open "{filepath}"')
+                        else:  # Linux
+                            os.system(f'xdg-open "{filepath}"')
+                    else:
+                        print("Unable to open the file automatically on this operating system.")
+                except Exception as e:
+                    print(f"Failed to open the file: {e}")
 
     # Ask the user if they want to create a Spotify playlist
     create_playlist_choice = input("Do you want to create a Spotify playlist with these songs? (yes/no): ").strip().lower()

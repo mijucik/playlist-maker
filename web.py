@@ -122,7 +122,7 @@ WEB_NOISE_PREFIXES = (
     "Enter the maximum number of playlists to search:",
     "Only use YouTube Music playlists with at least how many songs?",
     "Only use YouTube Music playlists with at most how many songs?",
-    "Enter one or more keywords/phrases",
+    "Enter one or more words or phrases",
     "Choose your Surprise Me mode:",
     "Do you want to generate a text file, an HTML file, or display in terminal",
     "Do you want to create a Spotify playlist with these songs?",
@@ -340,7 +340,7 @@ def build_default_form_data():
         "visibility": "Any visibility",
         "filter_mode": "Rediscover preset",
         "filter_value": "",
-        "max_playlists": "10",
+        "max_playlists": "50",
         "min_playlist_size": "",
         "max_playlist_size": "100",
         "discovery_mode": "YouTube Music discovery",
@@ -393,7 +393,7 @@ def build_initial_cli_answers(form):
             lines.append(form["filter_value"].strip())
 
     if source_choice == "5":
-        lines.append(form["max_playlists"].strip() or "10")
+        lines.append(form["max_playlists"].strip() or "50")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
         lines.append(form["keywords"].strip())
@@ -407,7 +407,7 @@ def build_initial_cli_answers(form):
         lines.append(surprise_choice)
 
         if surprise_choice == "1":
-            lines.append(form["max_playlists"].strip() or "10")
+            lines.append(form["max_playlists"].strip() or "50")
             lines.append(form["min_playlist_size"].strip())
             lines.append(form["max_playlist_size"].strip())
         elif surprise_choice == "3":
@@ -417,13 +417,7 @@ def build_initial_cli_answers(form):
             lines.append("yes" if form.get("random_new") else "no")
             lines.append("yes" if form.get("random_exclude_singles") else "no")
 
-    num_songs_raw = form["num_songs"].strip().lower()
-    if num_songs_raw != "one":
-        try:
-            if int(num_songs_raw or "1") > 1:
-                lines.append(form["output_format"])
-        except ValueError:
-            pass
+    lines.append(form["output_format"])
 
     return "\n".join(lines) + "\n"
 
@@ -739,44 +733,51 @@ class InteractiveRunSession:
         selected_count = report.get("selected_count")
         source = report.get("source")
         if selected_count is not None:
+            song_label = "song" if selected_count == 1 else "songs"
             source_text = f" from {source}" if source else ""
-            lines.append(f"Generated {selected_count} song(s){source_text}.")
+            lines.append(f"{selected_count} {song_label}{source_text}.")
 
         keywords = report.get("keywords")
         if keywords:
-            lines.append("Keywords used: " + ", ".join(keywords))
+            lines.append("Keywords: " + ", ".join(keywords))
 
         if report.get("max_playlists"):
-            min_size = report.get("min_playlist_size") or "no minimum"
-            max_size = report.get("max_playlist_size") or "no maximum"
-            lines.append(
-                f"Discovery settings: max {report['max_playlists']} playlist(s), "
-                f"playlist size {min_size} to {max_size} songs."
-            )
+            min_size = report.get("min_playlist_size")
+            max_size = report.get("max_playlist_size")
+            if min_size or max_size:
+                size_range = f"size {min_size or 'any'}–{max_size or 'any'} songs/playlist"
+            else:
+                size_range = "no playlist size limits"
+            lines.append(f"Discovery: max {report['max_playlists']} playlists, {size_range}.")
 
         if self.generated_file and self.generated_file.exists():
             kind = self.generated_file.suffix.lower().lstrip(".") or "file"
             filename = report.get("artifact_name") or self.generated_file.name
-            lines.append(f'{kind.upper()} file "{filename}" was generated.')
+            lines.append(f'{kind.upper()} file "{filename}" generated.')
         elif report.get("output_format") == "terminal" or self.display_output.strip():
-            lines.append("Output was printed in the browser.")
+            lines.append("Output printed in browser.")
 
         if report.get("links_added"):
             exact_links = report.get("spotify_exact_links", 0)
             search_links = report.get("spotify_search_links", 0)
             youtube_links = report.get("youtube_links", 0)
-            lines.append(
-                f"Links: {exact_links} exact Spotify link(s), "
-                f"{search_links} Spotify search fallback(s), {youtube_links} YouTube link(s)."
-            )
+            link_parts = []
+            if exact_links:
+                link_parts.append(f"{exact_links} Spotify exact")
+            if search_links:
+                link_parts.append(f"{search_links} Spotify search")
+            if youtube_links:
+                link_parts.append(f"{youtube_links} YouTube")
+            if link_parts:
+                lines.append("Links: " + ", ".join(link_parts) + ".")
 
         playlist_status = report.get("spotify_playlist_status")
         if playlist_status:
             playlist_name = report.get("spotify_playlist_name")
             if playlist_name:
-                lines.append(f'Spotify playlist: {playlist_status} ("{playlist_name}").')
+                lines.append(f'Playlist "{playlist_name}": {playlist_status}.')
             else:
-                lines.append(f"Spotify playlist: {playlist_status}.")
+                lines.append(f"Playlist: {playlist_status}.")
 
         for warning in report.get("warnings", []):
             lines.append(f"Warning: {warning}")
@@ -787,7 +788,7 @@ class InteractiveRunSession:
         if lines:
             return "\n".join(lines)
         if self.display_output.strip():
-            return "Run complete. Songs were printed in the browser output."
+            return "Run complete. Songs printed in browser."
         return "Run complete."
 
     def build_summary_kind_locked(self):
@@ -1155,7 +1156,7 @@ def render_page(form, status="Ready."):
 
       <div id="public-keywords-section">
         <h3 class="section-title">Public Discovery Keywords</h3>
-        <p class="section-copy">Enter one or more words or phrases, like <code>happy</code>, <code>yacht rock</code>, or <code>"summer jazz"</code>.</p>
+        <p class="section-copy">Enter one or more words or phrases, like <code>"happy"</code>, <code>"yacht rock"</code>, or <code>"summer jazz"</code>.</p>
         <div class="grid">
           <label for="keywords">Keywords</label>
           <input id="keywords" name="keywords" value="{escape(form['keywords'])}">
@@ -1189,8 +1190,8 @@ def render_page(form, status="Ready."):
       </div>
 
       <div id="output-format-section">
-        <h3 class="section-title">Multi-song Output</h3>
-        <p class="section-copy">If you request more than one song, you can keep it in the live terminal or generate a text or HTML file.</p>
+        <h3 class="section-title">Output Format</h3>
+        <p class="section-copy">Choose how to output the selected song(s): display in the live terminal or generate a text or HTML file.</p>
         <div class="grid">
           <label for="output_format">Output format</label>
           <select id="output_format" name="output_format">
@@ -1320,7 +1321,7 @@ def render_page(form, status="Ready."):
       setHidden(publicKeywordsSection, source !== "Public discovery");
       setHidden(surpriseSection, source !== "Surprise me");
       setHidden(randomSongCustomSection, !(source === "Surprise me" && surpriseMode === "random-song.com custom"));
-      setHidden(outputFormatSection, !wantsMultipleSongs());
+      setHidden(outputFormatSection, false);
 
       const needsFilterValue = filterMode !== "Rediscover preset";
       filterValueInput.disabled = !needsFilterValue;
