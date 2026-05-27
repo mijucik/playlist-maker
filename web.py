@@ -1115,10 +1115,10 @@ def render_page(form, status="Ready."):
         <div class="grid">
           <label for="playlist_scope">Selection</label>
           <select id="playlist_scope" name="playlist_scope">
-            <option{option(form['playlist_scope'], 'All playlists')}>All playlists — your entire Spotify library</option>
-            <option{option(form['playlist_scope'], 'Filter by name')}>Filter by name — match by keyword, preset, or regex</option>
-            <option{option(form['playlist_scope'], 'Own playlists only')}>Own playlists only — playlists you created</option>
-            <option{option(form['playlist_scope'], 'Random selection')}>Random selection — sample across your playlists</option>
+            <option value="All playlists"{option(form['playlist_scope'], 'All playlists')}>All playlists — your entire Spotify library</option>
+            <option value="Filter by name"{option(form['playlist_scope'], 'Filter by name')}>Filter by name — match by keyword, preset, or regex</option>
+            <option value="Own playlists only"{option(form['playlist_scope'], 'Own playlists only')}>Own playlists only — playlists you created</option>
+            <option value="Random selection"{option(form['playlist_scope'], 'Random selection')}>Random selection — sample across your playlists</option>
           </select>
         </div>
       </div>
