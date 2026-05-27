@@ -11,6 +11,7 @@ import sys
 import tempfile
 import threading
 import urllib.parse
+import urllib.request
 import uuid
 import webbrowser
 from datetime import datetime
@@ -27,6 +28,9 @@ DEFAULT_PORT = 8765
 SESSIONS = {}
 SESSIONS_LOCK = threading.Lock()
 RUNTIME_SETUP_MESSAGE = ""
+WEB_STATUS_PREFIX = "WEB_STATUS_JSON:"
+RANDOM_SONG_API_BASE_URL = "https://europe-west1-randommusicgenerator-34646.cloudfunctions.net/appV2"
+RANDOM_SONG_OPTIONS_CACHE = None
 
 AUTO_RESPONSE_PROMPTS = {
     "Do you want to open the file now? (yes/no): ": "no",
@@ -80,6 +84,7 @@ PROMPT_SUFFIXES = list(AUTO_RESPONSE_PROMPTS) + list(INTERACTIVE_PROMPTS)
 REQUIRED_MODULES = {
     "spotipy": "spotipy==2.26.0",
     "tqdm": "tqdm==4.66.5",
+    "ytmusicapi": "ytmusicapi==1.12.0",
 }
 GENERATED_DIR = REPO_DIR / "generated"
 ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
@@ -90,11 +95,8 @@ WEB_NOISE_EXACT_LINES = {
     "2. Filter your playlists by name",
     "3. Your own playlists",
     "4. Random saved playlists",
-    "5. Search public music sources by keywords/phrases",
+    "5. Search YouTube Music by keywords/phrases",
     "6. Surprise me",
-    "1. Hybrid web-only: YouTube playlists + YouTube track search",
-    "2. YouTube playlists only",
-    "3. Track search only (YouTube web search)",
     "1. Random emotions/genres via public discovery",
     "2. random-song.com with its default random configuration",
     "3. random-song.com with custom configuration",
@@ -113,14 +115,13 @@ WEB_NOISE_PREFIXES = (
     "Number of songs to fetch:",
     "Choose the source of songs:",
     "Enter the number of your choice",
-    "Choose how public discovery should work:",
     "Enter 1, 2, or 3",
     "Enter 1, 2, 3, 4, 5, or 6",
     "Enter 1, 2, 3, or 4",
     "Enter a name for your new playlist:",
     "Enter the maximum number of playlists to search:",
-    "Only use public playlists with at least how many songs?",
-    "Only use public playlists with at most how many songs?",
+    "Only use YouTube Music playlists with at least how many songs?",
+    "Only use YouTube Music playlists with at most how many songs?",
     "Enter one or more keywords/phrases",
     "Choose your Surprise Me mode:",
     "Do you want to generate a text file, an HTML file, or display in terminal",
@@ -134,6 +135,16 @@ WEB_NOISE_PREFIXES = (
     "Do you want to switch to a web-only Surprise Me fallback instead?",
     "Do you want to switch to a no-Spotify-API Surprise Me fallback instead?",
     "Do you want to try YouTube links instead?",
+    "Starting YouTube Music discovery",
+    "YouTube Music is the source of truth",
+    "Searching YouTube Music",
+    "Reading YouTube Music playlist:",
+    "Skipping YouTube Music playlist",
+    "Recovered ",
+    "Compiled ",
+    "Building Spotify links",
+    "Looking up YouTube links",
+    "Output file will be:",
 )
 
 
@@ -178,6 +189,60 @@ def save_local_config(config_data):
 
 def escape(value):
     return html.escape(value or "")
+
+
+def random_song_api_get(path):
+    url = f"{RANDOM_SONG_API_BASE_URL}{path}"
+    request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json"})
+    with urllib.request.urlopen(request, timeout=8) as response:
+        return json.load(response)
+
+
+def get_random_song_options():
+    global RANDOM_SONG_OPTIONS_CACHE
+    if RANDOM_SONG_OPTIONS_CACHE is not None:
+        return RANDOM_SONG_OPTIONS_CACHE
+
+    try:
+        RANDOM_SONG_OPTIONS_CACHE = {
+            "markets": random_song_api_get("/getMarkets").get("data", []),
+            "genres": random_song_api_get("/getGenres").get("data", []),
+            "decades": random_song_api_get("/getDecades").get("data", []),
+        }
+    except Exception:
+        RANDOM_SONG_OPTIONS_CACHE = {
+            "markets": [],
+            "genres": [],
+            "decades": [],
+        }
+    return RANDOM_SONG_OPTIONS_CACHE
+
+
+def option_value(entry):
+    if isinstance(entry, dict):
+        return entry.get("name") or entry.get("value") or ""
+    return str(entry or "")
+
+
+def render_select_options(current, entries, defaults):
+    values = []
+    seen = set()
+    for value in defaults:
+        if value not in seen:
+            values.append(value)
+            seen.add(value)
+    for entry in entries:
+        value = option_value(entry)
+        if value and value not in seen:
+            values.append(value)
+            seen.add(value)
+    if current and current not in seen:
+        values.insert(0, current)
+
+    return "\n".join(
+        f'<option value="{escape(value)}"{" selected" if current == value else ""}>{escape(value)}</option>'
+        for value in values
+    )
 
 
 def strip_ansi(text):
@@ -275,8 +340,8 @@ def build_default_form_data():
         "filter_value": "",
         "max_playlists": "10",
         "min_playlist_size": "",
-        "max_playlist_size": "",
-        "discovery_mode": "Hybrid web-only",
+        "max_playlist_size": "100",
+        "discovery_mode": "YouTube Music discovery",
         "keywords": "",
         "surprise_mode": "Random emotions/genres via public discovery",
         "random_genre": "random",
@@ -328,15 +393,6 @@ def build_initial_cli_answers(form):
         lines.append(form["max_playlists"].strip() or "10")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
-        lines.append({
-            "Hybrid": "1",
-            "Hybrid web-only": "1",
-            "YouTube playlists only": "2",
-            "YouTube playlists": "2",
-            "Track search only": "3",
-            "Track search only (YouTube web search)": "3",
-            "No Spotify API": "1",
-        }[form["discovery_mode"]])
         lines.append(form["keywords"].strip())
 
     if source_choice == "6":
@@ -351,15 +407,6 @@ def build_initial_cli_answers(form):
             lines.append(form["max_playlists"].strip() or "10")
             lines.append(form["min_playlist_size"].strip())
             lines.append(form["max_playlist_size"].strip())
-            lines.append({
-                "Hybrid": "1",
-                "Hybrid web-only": "1",
-                "YouTube playlists only": "2",
-                "YouTube playlists": "2",
-                "Track search only": "3",
-                "Track search only (YouTube web search)": "3",
-                "No Spotify API": "1",
-            }[form["discovery_mode"]])
         elif surprise_choice == "3":
             lines.append(form["random_genre"].strip() or "random")
             lines.append(form["random_market"].strip() or "random")
@@ -472,6 +519,10 @@ class InteractiveRunSession:
         self.exit_code = None
         self.current_prompt = None
         self.status = "Starting..."
+        self.status_phase = "Starting"
+        self.status_lines = ["Starting the picker..."]
+        self.summary = None
+        self.summary_kind = None
         self.generated_file = None
         self.error = None
         self.was_cancelled = False
@@ -483,6 +534,7 @@ class InteractiveRunSession:
         env["SPOTIPY_CLIENT_ID"] = self.form["client_id"].strip()
         env["SPOTIPY_CLIENT_SECRET"] = self.form["client_secret"].strip()
         env["SPOTIPY_REDIRECT_URI"] = self.form["redirect_uri"].strip() or DEFAULT_REDIRECT_URI
+        env["SPOTIFY_PICKER_WEB_STATUS"] = "1"
 
         self.process = subprocess.Popen(
             [sys.executable, "main.py"],
@@ -517,16 +569,25 @@ class InteractiveRunSession:
                 self.exit_code = self.process.returncode
                 if self.was_cancelled:
                     self.status = "Run cancelled."
+                    self.summary = "Run cancelled."
+                    self.summary_kind = "error"
                 elif self.exit_code == 0:
                     self.status = "Run finished."
+                    if not self.summary:
+                        self.summary = self.build_completion_summary_locked()
+                        self.summary_kind = "error" if "No tracks found." in self.display_output else "success"
                 else:
                     self.status = f"Run exited with code {self.exit_code}."
+                    self.summary = f"The picker stopped before completing. Exit code: {self.exit_code}."
+                    self.summary_kind = "error"
                 self.current_prompt = None
         except Exception as error:
             with self.lock:
                 self.finished = True
                 self.error = str(error)
                 self.status = f"Run failed: {error}"
+                self.summary = f"Run failed: {error}"
+                self.summary_kind = "error"
 
     def _handle_output_chunk(self, chunk):
         pending_prompt = None
@@ -623,9 +684,41 @@ class InteractiveRunSession:
         cleaned = line.strip()
         if not cleaned:
             return
+        if cleaned.startswith(WEB_STATUS_PREFIX):
+            self._record_status_payload_locked(cleaned[len(WEB_STATUS_PREFIX):])
+            return
         if not should_include_web_output_line(cleaned):
             return
         self.display_output += cleaned + "\n"
+
+    def _record_status_payload_locked(self, raw_payload):
+        try:
+            payload = json.loads(raw_payload)
+        except json.JSONDecodeError:
+            return
+
+        phase = payload.get("phase") or self.status_phase
+        message = payload.get("message")
+        level = payload.get("level", "info")
+        self.status_phase = phase.replace("-", " ").title()
+        if payload.get("reset"):
+            self.status_lines = []
+        if message:
+            self.status_lines.append(message)
+            self.status_lines = self.status_lines[-4:]
+        if level == "error":
+            self.summary = message or "The run hit an error."
+            self.summary_kind = "error"
+
+    def build_completion_summary_locked(self):
+        if "No tracks found." in self.display_output:
+            return "No tracks found. Try broader keywords or relax the playlist size limits."
+        if self.generated_file and self.generated_file.exists():
+            kind = self.generated_file.suffix.lower().lstrip(".") or "file"
+            return f"Run complete. Your {kind.upper()} output is ready."
+        if self.display_output.strip():
+            return "Run complete. Songs were printed in the browser output."
+        return "Run complete."
 
     def artifact_url(self):
         if not self.generated_file or not self.generated_file.exists():
@@ -647,6 +740,12 @@ class InteractiveRunSession:
                 "finished": self.finished,
                 "exit_code": self.exit_code,
                 "output": self.display_output,
+                "status_feed": {
+                    "phase": self.status_phase,
+                    "lines": self.status_lines,
+                    "summary": self.summary,
+                    "kind": self.summary_kind,
+                },
                 "prompt": self.current_prompt,
                 "artifact_path": artifact_path,
                 "artifact_kind": artifact_kind,
@@ -671,6 +770,10 @@ def get_session(session_id):
 def render_page(form, status="Ready."):
     option = lambda current, value: " selected" if current == value else ""
     checked = lambda name: " checked" if form.get(name) else ""
+    random_options = get_random_song_options()
+    random_genre_options = render_select_options(form["random_genre"], random_options["genres"], ["random", "none"])
+    random_market_options = render_select_options(form["random_market"], random_options["markets"], ["random"])
+    random_decade_options = render_select_options(form["random_decade"], random_options["decades"], ["random", "all"])
 
     return f"""<!DOCTYPE html>
 <html lang="en">
@@ -693,7 +796,7 @@ def render_page(form, status="Ready."):
     h1 {{ margin-top: 0; }}
     .card {{
       background: white;
-      border-radius: 16px;
+      border-radius: 10px;
       padding: 18px;
       margin-bottom: 16px;
       box-shadow: 0 12px 30px rgba(0, 0, 0, 0.06);
@@ -734,6 +837,15 @@ def render_page(form, status="Ready."):
       background: #dfe8df;
       color: #183323;
     }}
+    .artifact-open {{
+      display: inline-block;
+      padding: 10px 16px;
+      border-radius: 999px;
+      background: #25372c;
+      color: #fff;
+      text-decoration: none;
+      font-weight: 700;
+    }}
     .status {{
       white-space: pre-wrap;
       color: #234a31;
@@ -761,6 +873,52 @@ def render_page(form, status="Ready."):
       min-height: 260px;
       max-height: 520px;
       overflow-y: auto;
+    }}
+    .status-feed {{
+      border: 1px solid #d8dfd8;
+      border-radius: 10px;
+      padding: 16px;
+      background: #fbfcf8;
+      min-height: 120px;
+    }}
+    .status-phase {{
+      color: #536257;
+      font-size: 0.9rem;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 10px;
+    }}
+    .status-line {{
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      margin: 8px 0;
+      color: #1f2a21;
+    }}
+    .pulse {{
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #4d6f5a;
+      animation: pulse 1s ease-in-out infinite;
+      flex: 0 0 auto;
+    }}
+    .summary-card {{
+      border: 1px solid #d8dfd8;
+      border-radius: 10px;
+      padding: 16px;
+      background: #faf8ef;
+      color: #25372c;
+      font-weight: 650;
+    }}
+    .summary-card.error {{
+      border-color: #e0b4ad;
+      background: #fff5f2;
+      color: #9a2d1d;
+    }}
+    @keyframes pulse {{
+      0%, 100% {{ opacity: 0.35; transform: scale(0.85); }}
+      50% {{ opacity: 1; transform: scale(1.15); }}
     }}
     .hint {{
       color: #536257;
@@ -883,8 +1041,10 @@ def render_page(form, status="Ready."):
 
       <div id="public-discovery-options-section">
         <h3 class="section-title">Public Discovery Settings</h3>
-        <p class="section-copy">These settings control how many public source playlists are considered and what size range they must fall into. Public discovery now avoids Spotify's API by default and uses web-based sources instead.</p>
-        <div class="grid">
+        <p class="section-copy">Public discovery uses YouTube Music metadata only, so random non-music videos do not slip in. Defaults are tuned for a quick run.</p>
+        <input type="hidden" id="discovery_mode" name="discovery_mode" value="YouTube Music discovery">
+        <button type="button" class="ghost" id="advanced-discovery-toggle">Tweak discovery settings</button>
+        <div class="grid hidden" id="advanced-discovery-fields" style="margin-top: 14px;">
           <label for="max_playlists">Max playlists</label>
           <input id="max_playlists" name="max_playlists" value="{escape(form['max_playlists'])}">
 
@@ -893,13 +1053,6 @@ def render_page(form, status="Ready."):
 
           <label for="max_playlist_size">Max playlist size</label>
           <input id="max_playlist_size" name="max_playlist_size" value="{escape(form['max_playlist_size'])}">
-
-          <label for="discovery_mode">Discovery mode</label>
-          <select id="discovery_mode" name="discovery_mode">
-            <option{option(form['discovery_mode'], 'Hybrid web-only')}>Hybrid web-only</option>
-            <option{option(form['discovery_mode'], 'YouTube playlists only')}>YouTube playlists only</option>
-            <option{option(form['discovery_mode'], 'Track search only (YouTube web search)')}>Track search only (YouTube web search)</option>
-          </select>
         </div>
       </div>
 
@@ -917,13 +1070,19 @@ def render_page(form, status="Ready."):
         <p class="section-copy">Leave values as <code>random</code> when you want random-song.com to choose for you.</p>
         <div class="grid">
           <label for="random_genre">Custom genre</label>
-          <input id="random_genre" name="random_genre" value="{escape(form['random_genre'])}">
+          <select id="random_genre" name="random_genre">
+            {random_genre_options}
+          </select>
 
           <label for="random_market">Custom market</label>
-          <input id="random_market" name="random_market" value="{escape(form['random_market'])}">
+          <select id="random_market" name="random_market">
+            {random_market_options}
+          </select>
 
           <label for="random_decade">Custom decade</label>
-          <input id="random_decade" name="random_decade" value="{escape(form['random_decade'])}">
+          <select id="random_decade" name="random_decade">
+            {random_decade_options}
+          </select>
         </div>
 
         <div class="row" style="margin-top: 12px;">
@@ -974,8 +1133,10 @@ def render_page(form, status="Ready."):
     </div>
 
     <div class="card">
-      <h2>Run Log</h2>
-      <pre id="terminal-output"></pre>
+      <h2>Run Progress</h2>
+      <div class="status-feed" id="status-feed"></div>
+      <div class="summary-card hidden" id="summary-card"></div>
+      <pre id="terminal-output" class="hidden"></pre>
     </div>
 
     <div class="card hidden" id="artifact-card">
@@ -1010,6 +1171,8 @@ def render_page(form, status="Ready."):
     const visibilitySection = document.getElementById("visibility-section");
     const playlistFilterSection = document.getElementById("playlist-filter-section");
     const publicDiscoveryOptionsSection = document.getElementById("public-discovery-options-section");
+    const advancedDiscoveryToggle = document.getElementById("advanced-discovery-toggle");
+    const advancedDiscoveryFields = document.getElementById("advanced-discovery-fields");
     const publicKeywordsSection = document.getElementById("public-keywords-section");
     const surpriseSection = document.getElementById("surprise-section");
     const randomSongCustomSection = document.getElementById("random-song-custom-section");
@@ -1020,6 +1183,8 @@ def render_page(form, status="Ready."):
     const runButton = document.getElementById("run-button");
     const cancelButton = document.getElementById("cancel-button");
     const statusText = document.getElementById("status-text");
+    const statusFeed = document.getElementById("status-feed");
+    const summaryCard = document.getElementById("summary-card");
     const terminalOutput = document.getElementById("terminal-output");
     const promptCard = document.getElementById("prompt-card");
     const promptText = document.getElementById("prompt-text");
@@ -1077,6 +1242,38 @@ def render_page(form, status="Ready."):
       cancelButton.classList.toggle("hidden", !isRunning);
     }}
 
+    function renderStatusFeed(data) {{
+      const feed = data.status_feed || {{}};
+      const hasSummary = Boolean(feed.summary) && data.finished;
+      setHidden(statusFeed, hasSummary);
+      setHidden(summaryCard, !hasSummary);
+
+      if (hasSummary) {{
+        summaryCard.textContent = feed.summary;
+        summaryCard.classList.toggle("error", feed.kind === "error");
+        return;
+      }}
+
+      const lines = feed.lines && feed.lines.length ? feed.lines : ["Starting the picker..."];
+      const phase = feed.phase || "Working";
+      statusFeed.innerHTML = "";
+      const phaseElement = document.createElement("div");
+      phaseElement.className = "status-phase";
+      phaseElement.textContent = phase;
+      statusFeed.appendChild(phaseElement);
+      lines.forEach((line) => {{
+        const row = document.createElement("div");
+        row.className = "status-line";
+        const pulse = document.createElement("span");
+        pulse.className = "pulse";
+        const text = document.createElement("span");
+        text.textContent = line;
+        row.appendChild(pulse);
+        row.appendChild(text);
+        statusFeed.appendChild(row);
+      }});
+    }}
+
     function renderArtifact(data) {{
       const hasArtifact = Boolean(data.artifact_url);
       setHidden(artifactCard, !hasArtifact);
@@ -1095,19 +1292,14 @@ def render_page(form, status="Ready."):
       openButton.target = "_blank";
       openButton.rel = "noreferrer";
       openButton.textContent = `Open ${{data.artifact_kind || 'file'}}`;
-      openButton.className = "secondary";
-      openButton.style.display = "inline-block";
-      openButton.style.padding = "10px 16px";
-      openButton.style.borderRadius = "999px";
-      openButton.style.color = "white";
-      openButton.style.textDecoration = "none";
+      openButton.className = "artifact-open";
       artifactActions.appendChild(openButton);
 
       if (data.artifact_kind === "html") {{
         artifactFrame.src = data.artifact_url;
         artifactFrame.classList.remove("hidden");
       }} else if (data.artifact_kind === "txt") {{
-        artifactNote.textContent = "Your text file is ready. Use the open button above to view it.";
+        artifactNote.textContent = "Your text file is ready. Use the Open button above to open it.";
         artifactNote.classList.remove("hidden");
       }}
     }}
@@ -1178,7 +1370,9 @@ def render_page(form, status="Ready."):
 
     function renderSession(data) {{
       statusText.textContent = data.status || "Running...";
+      renderStatusFeed(data);
       terminalOutput.textContent = data.output || "";
+      terminalOutput.classList.toggle("hidden", !(data.finished && data.output && !data.artifact_url));
       terminalOutput.scrollTop = terminalOutput.scrollHeight;
       renderPrompt(data);
       renderArtifact(data);
@@ -1218,6 +1412,10 @@ def render_page(form, status="Ready."):
       }}
       currentSessionId = data.session_id;
       terminalOutput.textContent = "";
+      terminalOutput.classList.add("hidden");
+      statusFeed.classList.remove("hidden");
+      summaryCard.classList.add("hidden");
+      statusFeed.innerHTML = '<div class="status-phase">Starting</div><div class="status-line"><span class="pulse"></span><span>Starting the picker...</span></div>';
       renderArtifact({{}});
       renderPrompt({{ prompt: null }});
       statusText.textContent = "Run started...";
@@ -1254,6 +1452,11 @@ def render_page(form, status="Ready."):
     numSongsInput.addEventListener("input", updateFlow);
     filterModeSelect.addEventListener("change", updateFlow);
     surpriseModeSelect.addEventListener("change", updateFlow);
+    advancedDiscoveryToggle.addEventListener("click", () => {{
+      const shouldShow = advancedDiscoveryFields.classList.contains("hidden");
+      advancedDiscoveryFields.classList.toggle("hidden", !shouldShow);
+      advancedDiscoveryToggle.textContent = shouldShow ? "Hide discovery settings" : "Tweak discovery settings";
+    }});
     cancelButton.addEventListener("click", cancelRun);
     promptForm.addEventListener("submit", (event) => {{
       event.preventDefault();
