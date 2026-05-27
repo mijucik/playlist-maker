@@ -1270,18 +1270,30 @@ def maybe_open_platform_links(selected_songs, link_platform):
 
 
 def build_keyword_combinations(keywords):
+    """Return search queries to try, ordered from most specific to broadest.
+
+    Individual keywords are tried first so that a focused genre term like
+    "space disco" or "morning coffee" gets its own search pass before we
+    attempt broader pair combinations that are often too specific for YouTube
+    Music's index and return zero results.
+    """
     keyword_combinations = []
     seen_combinations = set()
+
+    # Pass 1: individual keywords (most likely to return results)
+    for keyword in keywords:
+        if keyword not in seen_combinations:
+            keyword_combinations.append(keyword)
+            seen_combinations.add(keyword)
+
+    # Pass 2: pairs of keywords (supplementary, more specific)
     for i in range(len(keywords)):
-        for j in range(i, len(keywords)):
-            if i != j:
-                combined_keywords = f"{keywords[i]} {keywords[j]}"
-                if combined_keywords not in seen_combinations:
-                    keyword_combinations.append(combined_keywords)
-                    seen_combinations.add(combined_keywords)
-            if keywords[i] not in seen_combinations:
-                keyword_combinations.append(keywords[i])
-                seen_combinations.add(keywords[i])
+        for j in range(i + 1, len(keywords)):
+            combined = f"{keywords[i]} {keywords[j]}"
+            if combined not in seen_combinations:
+                keyword_combinations.append(combined)
+                seen_combinations.add(combined)
+
     return keyword_combinations
 
 
@@ -1485,6 +1497,10 @@ def fetch_songs_from_youtube_music_playlists(
             print(f"Could not load YouTube Music playlist '{playlist_title}': {error}")
             continue
 
+        if not isinstance(playlist_data, dict):
+            print(f"Could not load YouTube Music playlist '{playlist_title}': unexpected response type.")
+            continue
+
         track_count = playlist_data.get("trackCount")
         if not isinstance(track_count, int):
             track_count = len(playlist_data.get("tracks") or [])
@@ -1557,6 +1573,107 @@ def search_youtube_music_songs_by_keywords(keywords, max_songs):
     return song_list[:max_songs]
 
 
+def fetch_songs_from_spotify_genre_recommendations(keywords, max_songs=100):
+    """Discover songs using Spotify's recommendations API seeded by genre.
+
+    Spotify maintains a curated list of genre seeds (e.g. "jazz", "disco",
+    "ambient").  This function fuzzy-matches each keyword against that list,
+    picks the best genre seeds, and calls spotify.recommendations() which
+    returns actual tracks — far more reliable than keyword-searching YouTube
+    Music playlist titles for mood/genre terms like "morning coffee" or
+    "space disco".
+
+    Returns a list of song dicts in the same format used by the rest of the
+    pipeline, or an empty list if Spotify is unavailable.
+    """
+    spotify_client = get_spotify_search_client(context="Spotify genre recommendations")
+    if spotify_client is None:
+        return []
+
+    # Fetch available genre seeds once and cache on the function object.
+    if not hasattr(fetch_songs_from_spotify_genre_recommendations, "_genre_cache"):
+        try:
+            result = spotify_client.recommendation_genre_seeds()
+            fetch_songs_from_spotify_genre_recommendations._genre_cache = (
+                result.get("genres") or []
+            )
+        except Exception as error:
+            print(f"Could not fetch Spotify genre seeds: {error}")
+            fetch_songs_from_spotify_genre_recommendations._genre_cache = []
+
+    available_genres = fetch_songs_from_spotify_genre_recommendations._genre_cache
+    if not available_genres:
+        return []
+
+    def best_genre_match(keyword):
+        """Return the closest Spotify genre seed for a free-text keyword."""
+        keyword_lower = keyword.lower()
+        # Exact match first.
+        if keyword_lower in available_genres:
+            return keyword_lower
+        # Substring containment: genre is part of the keyword or vice versa.
+        for genre in available_genres:
+            if genre in keyword_lower or keyword_lower in genre:
+                return genre
+        # Word-overlap: share at least one word token.
+        keyword_tokens = set(re.split(r"[\s\-_]+", keyword_lower))
+        best, best_score = None, 0
+        for genre in available_genres:
+            genre_tokens = set(re.split(r"[\s\-_]+", genre))
+            score = len(keyword_tokens & genre_tokens)
+            if score > best_score:
+                best, best_score = genre, score
+        return best if best_score > 0 else None
+
+    matched_genres = []
+    seen_genres = set()
+    for keyword in keywords:
+        genre = best_genre_match(keyword)
+        if genre and genre not in seen_genres:
+            matched_genres.append(genre)
+            seen_genres.add(genre)
+
+    if not matched_genres:
+        print(f"No Spotify genre seeds matched for keywords: {', '.join(keywords)}")
+        return []
+
+    # Spotify allows at most 5 seed genres per recommendations call.
+    seed_genres = matched_genres[:5]
+    print(f"Fetching Spotify genre recommendations for seeds: {', '.join(seed_genres)}")
+    emit_web_status("search", f"Querying Spotify genre recommendations: {', '.join(seed_genres)}")
+
+    try:
+        result = spotify_client.recommendations(
+            seed_genres=seed_genres,
+            limit=min(max_songs, 100),
+        )
+    except Exception as error:
+        print(f"Could not fetch Spotify genre recommendations: {error}")
+        return []
+
+    song_list = []
+    for track in result.get("tracks") or []:
+        title = track.get("name")
+        artist_names = ", ".join(
+            a.get("name", "") for a in (track.get("artists") or []) if a.get("name")
+        )
+        spotify_url = track.get("external_urls", {}).get("spotify")
+        spotify_uri = track.get("uri")
+        if not title or not artist_names:
+            continue
+        song_list.append({
+            "title": title,
+            "artists": artist_names,
+            "spotify_url": spotify_url,
+            "spotify_uri": spotify_uri,
+            "spotify_found_exact_track": bool(spotify_url),
+            "source": "spotify-genre-recommendations",
+        })
+
+    print(f"Recovered {len(song_list)} song(s) from Spotify genre recommendations.")
+    return song_list
+
+
 def fetch_youtube_music_public_discovery_songs(
     keywords,
     max_playlists=15,
@@ -1565,8 +1682,12 @@ def fetch_youtube_music_public_discovery_songs(
     min_playlist_size=None,
     max_playlist_size=None,
 ):
-    print("Starting YouTube Music discovery by keywords/phrases...")
-    print("YouTube Music is the source of truth for public discovery in this run.")
+    """Discover songs via YouTube Music playlist search and direct song search.
+
+    This function is pure YouTube Music — no Spotify calls.  For genre-based
+    Surprise Me discovery, see fetch_surprise_discovery_tiered() which tries
+    Spotify genre recommendations first and only calls this as a fallback.
+    """
     emit_web_status("search", "Searching YouTube Music playlists...", reset=True)
 
     song_map = {}
@@ -1597,6 +1718,88 @@ def fetch_youtube_music_public_discovery_songs(
         done=True,
     )
     return song_list[:max_songs]
+
+
+# ---------------------------------------------------------------------------
+# Tiered discovery for "Surprise Me"
+# ---------------------------------------------------------------------------
+
+# Minimum number of Spotify recommendation tracks required to skip the
+# YouTube Music fallback entirely.  If fewer arrive (e.g. a genre seed maps
+# to a very small catalogue), we still return what we have — the retry loop
+# in fetch_surprise_public_discovery_with_retries will pick new keywords if
+# the total is too low.
+SPOTIFY_GENRE_RECOMMENDATIONS_MIN_SONGS = 10
+
+
+def fetch_surprise_discovery_tiered(
+    keywords,
+    max_songs,
+    max_playlists,
+    max_tracks_per_playlist,
+    min_playlist_size,
+    max_playlist_size,
+):
+    """Genre-based song discovery with ordered fallback tiers.
+
+    Tier 1 — Spotify genre recommendations (when credentials are configured):
+        Maps the random keywords to the closest Spotify genre seeds and calls
+        spotify.recommendations().  This is a maximum of 2 API calls (genre
+        seed list is cached after the first call) and directly returns real
+        tracks, making it far more reliable than text-searching YouTube Music
+        playlist titles for mood/vibe terms like "morning coffee" or
+        "space disco".  If this produces songs we return immediately without
+        touching YouTube Music.
+
+    Tier 2 — YouTube Music (always available, no credentials needed):
+        Falls back to the YouTube Music playlist + direct song search path
+        when Spotify is not configured, returns zero results, or fails.
+
+    Returns (song_list, effective_mode_label).
+    """
+    # ---- Tier 1: Spotify genre recommendations ----
+    if spotify_app_credentials_configured():
+        print("Trying Spotify genre recommendations (Tier 1)...")
+        emit_web_status(
+            "search",
+            f"Querying Spotify genre recommendations for: {', '.join(keywords)}",
+        )
+        try:
+            spotify_songs = fetch_songs_from_spotify_genre_recommendations(keywords, max_songs)
+        except Exception as error:
+            print(f"Spotify genre recommendations failed unexpectedly: {error}")
+            spotify_songs = []
+
+        if spotify_songs:
+            print(
+                f"Tier 1 (Spotify): found {len(spotify_songs)} song(s) "
+                f"via genre recommendations — skipping YouTube Music."
+            )
+            emit_web_status(
+                "complete",
+                f"Found {len(spotify_songs)} song(s) via Spotify genre recommendations.",
+                reset=True,
+                done=True,
+            )
+            return spotify_songs, "spotify-genre-recommendations"
+
+        print(
+            "Tier 1 (Spotify): no recommendations returned. "
+            "Falling back to YouTube Music (Tier 2)..."
+        )
+    else:
+        print("Spotify credentials not configured — starting at YouTube Music (Tier 2).")
+
+    # ---- Tier 2: YouTube Music ----
+    song_list = fetch_youtube_music_public_discovery_songs(
+        keywords,
+        max_playlists=max_playlists,
+        max_songs=max_songs,
+        max_tracks_per_playlist=max_tracks_per_playlist,
+        min_playlist_size=min_playlist_size,
+        max_playlist_size=max_playlist_size,
+    )
+    return song_list, DEFAULT_PUBLIC_DISCOVERY_MODE
 
 
 def merge_song_list_with_seen(song_list, seen_song_keys, song):
@@ -1671,12 +1874,7 @@ def resolve_song_on_spotify(song, suppress_errors=False):
 def describe_public_discovery_mode(discovery_mode):
     return {
         'youtube-music': 'YouTube Music discovery',
-        'hybrid': 'YouTube Music discovery',
-        'youtube-playlists-web': 'YouTube Music discovery',
-        'youtube-track-search': 'YouTube Music discovery',
-        'spotify-playlists-web': 'YouTube Music discovery',
-        'spotify-track-search': 'YouTube Music discovery',
-        'web-no-spotify-api': 'YouTube Music discovery',
+        'spotify-genre-recommendations': 'Spotify genre recommendations',
     }.get(discovery_mode, 'YouTube Music discovery')
 
 
@@ -1975,33 +2173,19 @@ def prompt_yes_no(prompt_text, default=None):
             return False
         print("Please answer yes or no.")
 
-# List of emotions/genres for the "Surprise Me" option
-
-def generate_random_keywords():
-    """Generate a random sequence of keywords from the surprise_keywords list."""
-    num_keywords = random.randint(2, 4)  # Choose between 2 to 4 random keywords
-    return random.sample(surprise_keywords, num_keywords)
-
-# Function to read the emotions/genres from a file
 def load_emotions_genres(file_path):
+    """Load the emotions/genres list used by Surprise Me from a plain-text file."""
     try:
         with open(file_path, 'r', encoding='utf-8') as f:
-            # Read all lines and strip any extra whitespace
-            emotions_genres = [line.strip() for line in f.readlines() if line.strip()]
-        return emotions_genres
+            return [line.strip() for line in f if line.strip()]
     except FileNotFoundError:
-        print(f"Error: The file '{file_path}' was not found.")
+        print(f"Warning: emotions/genres file '{file_path}' not found. Surprise Me will have no keyword pool.")
         return []
 
-# Load the emotions/genres list from the file in the same directory
+
 EMOTIONS_GENRES_FILE = 'emotions_genres.txt'
 EMOTIONS_GENRES = load_emotions_genres(EMOTIONS_GENRES_FILE)
-
-# Check if the list was loaded successfully
-if not EMOTIONS_GENRES:
-    print("No emotions or genres found in the file. Exiting...")
-else:
-    # You can now use the `EMOTIONS_GENRES` list in your existing "Surprise Me" option
+if EMOTIONS_GENRES:
     print(f"Loaded {len(EMOTIONS_GENRES)} emotions/genres from file.")
 
 
@@ -2082,11 +2266,22 @@ def fetch_surprise_public_discovery_with_retries(
     max_playlist_size,
     discovery_mode,
 ):
+    """Repeatedly draw random keyword sets and run tiered discovery until songs are found.
+
+    Each attempt uses fetch_surprise_discovery_tiered(), which tries Spotify
+    genre recommendations first (Tier 1) before falling back to YouTube Music
+    (Tier 2).  If an attempt returns no songs the loop picks a fresh set of
+    random keywords and retries, up to SURPRISE_PUBLIC_DISCOVERY_MAX_ATTEMPTS.
+    """
     attempted_keywords = []
     effective_mode = discovery_mode
 
     for attempt_number in range(1, SURPRISE_PUBLIC_DISCOVERY_MAX_ATTEMPTS + 1):
         keywords = random_surprise_keywords(3)
+        if not keywords:
+            print("No emotions/genres available for Surprise Me.")
+            break
+
         attempted_keywords.append(keywords)
         update_run_report(surprise_attempts=[" + ".join(keywords)])
         print(f"Randomly selected emotions/genres (attempt {attempt_number}): {', '.join(keywords)}")
@@ -2097,21 +2292,20 @@ def fetch_surprise_public_discovery_with_retries(
             report={"keywords": keywords, "surprise_attempts": [" + ".join(keywords)]},
         )
 
-        song_list, effective_mode = fetch_public_discovery_with_auto_fallback(
+        song_list, effective_mode = fetch_surprise_discovery_tiered(
             keywords,
-            max_playlists=max_playlists,
             max_songs=max_songs,
+            max_playlists=max_playlists,
             max_tracks_per_playlist=max_tracks_per_playlist,
             min_playlist_size=min_playlist_size,
             max_playlist_size=max_playlist_size,
-            discovery_mode=effective_mode,
         )
         if song_list:
             return song_list, effective_mode, keywords, attempted_keywords
 
         print("No songs found for that Surprise Me keyword set. Trying another set...")
 
-    attempted_summary = [" + ".join(keywords) for keywords in attempted_keywords]
+    attempted_summary = [" + ".join(kw) for kw in attempted_keywords]
     update_run_report(
         errors=(
             "No tracks found after trying these Surprise Me keyword sets: "
