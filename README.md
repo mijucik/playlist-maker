@@ -13,7 +13,7 @@ It can:
 - export results to `.txt` or `.html`
 - create a new private Spotify playlist from the selected songs
 
-The public discovery paths now use unauthenticated YouTube Music metadata through `ytmusicapi` and avoid Spotify's API entirely. Spotify API access is mainly used for your own playlists and for the final playlist-creation step when the app needs real Spotify track URIs.
+Public discovery uses unauthenticated YouTube Music metadata through `ytmusicapi` and avoids Spotify's API entirely. Spotify API access is mainly used for your own playlists and for the final playlist-creation step when the app needs real Spotify track URIs.
 
 ## Fresh Machine Setup
 
@@ -131,7 +131,7 @@ The web app lets people:
 - open the local launcher in a browser automatically
 - run the public discovery flows even with blank Spotify credentials
 
-The app also tries to be conservative with Spotify API usage now:
+The app is conservative with Spotify API usage:
 
 - it throttles Spotify Web API calls slightly instead of bursting them all at once
 - it honors Spotify `429` backoff windows when they are short enough to retry automatically
@@ -251,5 +251,5 @@ Useful flows:
 - For most people, playlist-name `contains` matching is simpler than regex. Regex is available when you want more control.
 - Public discovery results carry YouTube links from YouTube Music `videoId` metadata. Spotify links resolve to exact tracks when Spotify app credentials are available and safely fall back to search pages otherwise.
 - The `song_cache_*.json` files are local caches of playlist track data, not Spotify credentials.
-- Generated output files and cache files are now ignored by git, so each machine can create its own local data without shipping personal artifacts in the repo.
+- Generated output files and cache files are ignored by git, so each machine can create its own local data without shipping personal artifacts in the repo.
 - The old root-level `.cache` file was Spotipy's token cache format.

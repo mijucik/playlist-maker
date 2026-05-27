@@ -1104,7 +1104,7 @@ def render_page(form, status="Ready."):
 
     <form method="post" action="/save" class="card" id="settings-form">
       <h2>Spotify App Settings</h2>
-      <p class="section-copy">These are required for personal-playlist features and Spotify playlist creation. Public discovery and song-link output now work without Spotify app credentials.</p>
+      <p class="section-copy">These are required for personal-playlist features and Spotify playlist creation. Public discovery and song-link output work without Spotify app credentials.</p>
       <div class="grid">
         <label for="client_id">Client ID</label>
         <input id="client_id" name="client_id" value="{escape(form['client_id'])}">

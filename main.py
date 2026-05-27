@@ -12,6 +12,8 @@ import sys
 import tempfile
 import threading
 import time
+import textwrap
+import unicodedata
 import urllib.parse
 import urllib.request
 import webbrowser
@@ -627,17 +629,42 @@ class LazySpotifyClient:
 sp = LazySpotifyClient()
 
 
-CLI_WIDTH = 72
+CLI_WIDTH = 78
+BOX_CONTENT_WIDTH = CLI_WIDTH - 4
+ANSI_BOLD = "\033[1m"
+ANSI_CYAN = "\033[36m"
+ANSI_RESET = "\033[0m"
 
 
 def print_cli_rule(char="-"):
     print(char * CLI_WIDTH)
 
 
-def print_cli_label(label, value, indent="  "):
-    if value:
-        print(f"{indent}{label}:")
-        print(f"{indent}  {value}")
+def terminal_supports_color():
+    return (
+        sys.stdout.isatty()
+        and os.getenv("NO_COLOR") is None
+        and os.getenv("TERM", "").lower() != "dumb"
+    )
+
+
+def color_text(text, color):
+    if not terminal_supports_color():
+        return text
+    return f"{color}{text}{ANSI_RESET}"
+
+
+def visible_len(text):
+    width = 0
+    for char in str(text):
+        if unicodedata.combining(char):
+            continue
+        width += 2 if unicodedata.east_asian_width(char) in {"F", "W"} else 1
+    return width
+
+
+def pad_visible(text, width):
+    return str(text) + (" " * max(0, width - visible_len(text)))
 
 
 def print_cli_section(title):
@@ -2097,7 +2124,7 @@ def create_spotify_playlist(selected_songs):
             print("- the cached token was authorized without playlist-write scopes")
             print("- the token belongs to an older Spotify app configuration")
             print("- the request is not being treated as the current authenticated user")
-            print("This script requests playlist-modify-private and now creates playlists through the current-user endpoint.")
+            print("This script requests playlist-modify-private and creates playlists through the current-user endpoint.")
             print("Delete ~/.spotify-scripts/token_cache.json and run the script again to force a fresh Spotify consent flow.")
             print(f"Authenticated user during this run: {user_id}")
         if getattr(e, "http_status", None) == 429:
@@ -2181,70 +2208,72 @@ def prompt_for_playlist_size_range():
         return min_playlist_size, max_playlist_size
 
 
-def write_song_links_to_console(song, indent=""):
+def collect_song_link_rows(song):
+    link_rows = []
     if song.get('spotify_requested'):
         if song.get('spotify_url'):
             label = "direct track" if song.get('spotify_found_exact_track') else "search page"
-            print_cli_label(f"Spotify ({label})", song['spotify_url'], indent=indent)
+            link_rows.append((f"Spotify ({label})", song['spotify_url']))
         else:
-            print_cli_label("Spotify", "No Spotify link found", indent=indent)
+            link_rows.append(("Spotify", "No Spotify link found"))
 
     if song.get('youtube_requested') and song.get('youtube_url'):
         label = "direct video" if song.get('youtube_found_exact_video') else "search results"
-        print_cli_label(f"YouTube ({label})", song['youtube_url'], indent=indent)
+        link_rows.append((f"YouTube ({label})", song['youtube_url']))
+
+    if len(link_rows) == 1:
+        return [("URL", link_rows[0][1])]
+    return link_rows
+
+
+def wrap_box_row(label, value):
+    prefix = f"{label + ':':<9} "
+    value_width = max(20, BOX_CONTENT_WIDTH - visible_len(prefix))
+    wrapped_values = textwrap.wrap(
+        str(value) if value else "",
+        width=value_width,
+        break_long_words=True,
+        break_on_hyphens=False,
+    ) or [""]
+    rows = [f"{prefix}{wrapped_values[0]}"]
+    rows.extend(f"{' ' * len(prefix)}{line}" for line in wrapped_values[1:])
+    return rows
+
+
+def build_song_box_lines(index, song):
+    header = f" SONG {index} "
+    top = "┌──" + header + "─" * max(0, CLI_WIDTH - visible_len(header) - 4) + "┐"
+    bottom = "└" + "─" * (CLI_WIDTH - 2) + "┘"
+    content_lines = []
+
+    rows = [
+        ("Title", song.get('title') or "Unknown Title"),
+        ("Artist", song.get('artists') or "Unknown Artist"),
+    ]
+    rows.extend(collect_song_link_rows(song))
+
+    for label, value in rows:
+        for wrapped_line in wrap_box_row(label, value):
+            content_lines.append(f"│ {pad_visible(wrapped_line, BOX_CONTENT_WIDTH)} │")
+
+    return [top, *content_lines, bottom]
 
 
 def print_song_card(index, song):
-    song_title = song['title']
-    song_artists = song['artists']
     print()
-    print_cli_rule("-")
-    print(f"Song {index}")
-    print_cli_rule("-")
-    print_cli_label("Title", song_title)
-    print_cli_label("Artist", song_artists)
-
-    has_requested_links = song.get('spotify_requested') or song.get('youtube_requested')
-    if has_requested_links:
-        print("  Links:")
-        write_song_links_to_console(song, indent="    ")
-
-
-def write_text_rule(file_handle):
-    file_handle.write("-" * CLI_WIDTH + "\n")
-
-
-def write_text_label(file_handle, label, value, indent="  "):
-    if value:
-        file_handle.write(f"{indent}{label}:\n")
-        file_handle.write(f"{indent}  {value}\n")
-
-
-def write_song_links_to_text_file(song, file_handle, indent=""):
-    if song.get('spotify_requested'):
-        if song.get('spotify_url'):
-            label = "direct track" if song.get('spotify_found_exact_track') else "search page"
-            write_text_label(file_handle, f"Spotify ({label})", song['spotify_url'], indent=indent)
+    for line in build_song_box_lines(index, song):
+        if line.startswith(("┌", "└")):
+            print(color_text(line, ANSI_CYAN))
+        elif line.startswith("│") and any(label in line for label in ("Title:", "Artist:", "URL:", "Spotify", "YouTube")):
+            print(color_text(line, ANSI_BOLD))
         else:
-            write_text_label(file_handle, "Spotify", "No Spotify link found", indent=indent)
-
-    if song.get('youtube_requested') and song.get('youtube_url'):
-        label = "direct video" if song.get('youtube_found_exact_video') else "search results"
-        write_text_label(file_handle, f"YouTube ({label})", song['youtube_url'], indent=indent)
+            print(line)
 
 
 def write_song_card_to_text_file(file_handle, index, song):
     file_handle.write("\n")
-    write_text_rule(file_handle)
-    file_handle.write(f"Song {index}\n")
-    write_text_rule(file_handle)
-    write_text_label(file_handle, "Title", song['title'])
-    write_text_label(file_handle, "Artist", song['artists'])
-
-    has_requested_links = song.get('spotify_requested') or song.get('youtube_requested')
-    if has_requested_links:
-        file_handle.write("  Links:\n")
-        write_song_links_to_text_file(song, file_handle, indent="    ")
+    file_handle.write("\n".join(build_song_box_lines(index, song)))
+    file_handle.write("\n")
 
 
 def build_song_links_html(song):
@@ -3005,7 +3034,7 @@ def main():
         try:
             create_spotify_playlist(selected_songs)
         except (RunAborted, SpotifyApiUnavailableError) as error:
-            print(f"Skipping Spotify playlist creation because Spotify is unavailable right now: {error}")
+            print(f"Skipping Spotify playlist creation because Spotify is unavailable: {error}")
             update_run_report(
                 spotify_playlist_status="failed: Spotify unavailable",
                 errors=f"Spotify playlist creation skipped: {error}",
