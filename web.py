@@ -142,8 +142,10 @@ WEB_NOISE_PREFIXES = (
     "Skipping YouTube Music playlist",
     "Recovered ",
     "Compiled ",
+    "Finding Spotify links",
     "Building Spotify links",
     "Looking up YouTube links",
+    "Spotify API unavailable for Spotify song matching:",
     "Output file will be:",
 )
 
@@ -350,6 +352,7 @@ def build_default_form_data():
         "random_new": "",
         "random_exclude_singles": "",
         "output_format": "terminal",
+        "verbose": "",
     }
 
 
@@ -523,6 +526,7 @@ class InteractiveRunSession:
         self.status_lines = ["Starting the picker..."]
         self.summary = None
         self.summary_kind = None
+        self.report = {}
         self.generated_file = None
         self.error = None
         self.was_cancelled = False
@@ -575,7 +579,7 @@ class InteractiveRunSession:
                     self.status = "Run finished."
                     if not self.summary:
                         self.summary = self.build_completion_summary_locked()
-                        self.summary_kind = "error" if "No tracks found." in self.display_output else "success"
+                        self.summary_kind = self.build_summary_kind_locked()
                 else:
                     self.status = f"Run exited with code {self.exit_code}."
                     self.summary = f"The picker stopped before completing. Exit code: {self.exit_code}."
@@ -684,8 +688,9 @@ class InteractiveRunSession:
         cleaned = line.strip()
         if not cleaned:
             return
-        if cleaned.startswith(WEB_STATUS_PREFIX):
-            self._record_status_payload_locked(cleaned[len(WEB_STATUS_PREFIX):])
+        marker_index = cleaned.find(WEB_STATUS_PREFIX)
+        if marker_index != -1:
+            self._record_status_payload_locked(cleaned[marker_index + len(WEB_STATUS_PREFIX):])
             return
         if not should_include_web_output_line(cleaned):
             return
@@ -700,7 +705,8 @@ class InteractiveRunSession:
         phase = payload.get("phase") or self.status_phase
         message = payload.get("message")
         level = payload.get("level", "info")
-        self.status_phase = phase.replace("-", " ").title()
+        if phase != "report":
+            self.status_phase = phase.replace("-", " ").title()
         if payload.get("reset"):
             self.status_lines = []
         if message:
@@ -709,16 +715,98 @@ class InteractiveRunSession:
         if level == "error":
             self.summary = message or "The run hit an error."
             self.summary_kind = "error"
+        if isinstance(payload.get("report"), dict):
+            self._merge_report_locked(payload["report"])
+
+    def _merge_report_locked(self, report):
+        for key, value in report.items():
+            if key in {"warnings", "errors", "surprise_attempts"}:
+                existing = self.report.setdefault(key, [])
+                for item in value if isinstance(value, list) else [value]:
+                    if item and item not in existing:
+                        existing.append(item)
+            else:
+                self.report[key] = value
 
     def build_completion_summary_locked(self):
+        report = self.report
         if "No tracks found." in self.display_output:
             return "No tracks found. Try broader keywords or relax the playlist size limits."
+        if report.get("errors") and not report.get("selected_count"):
+            return "\n".join(report["errors"])
+
+        lines = []
+        selected_count = report.get("selected_count")
+        source = report.get("source")
+        if selected_count is not None:
+            source_text = f" from {source}" if source else ""
+            lines.append(f"Generated {selected_count} song(s){source_text}.")
+
+        keywords = report.get("keywords")
+        if keywords:
+            lines.append("Keywords used: " + ", ".join(keywords))
+
+        if report.get("max_playlists"):
+            min_size = report.get("min_playlist_size") or "no minimum"
+            max_size = report.get("max_playlist_size") or "no maximum"
+            lines.append(
+                f"Discovery settings: max {report['max_playlists']} playlist(s), "
+                f"playlist size {min_size} to {max_size} songs."
+            )
+
         if self.generated_file and self.generated_file.exists():
             kind = self.generated_file.suffix.lower().lstrip(".") or "file"
-            return f"Run complete. Your {kind.upper()} output is ready."
+            filename = report.get("artifact_name") or self.generated_file.name
+            lines.append(f'{kind.upper()} file "{filename}" was generated.')
+        elif report.get("output_format") == "terminal" or self.display_output.strip():
+            lines.append("Output was printed in the browser.")
+
+        if report.get("links_added"):
+            exact_links = report.get("spotify_exact_links", 0)
+            search_links = report.get("spotify_search_links", 0)
+            youtube_links = report.get("youtube_links", 0)
+            lines.append(
+                f"Links: {exact_links} exact Spotify link(s), "
+                f"{search_links} Spotify search fallback(s), {youtube_links} YouTube link(s)."
+            )
+
+        playlist_status = report.get("spotify_playlist_status")
+        if playlist_status:
+            playlist_name = report.get("spotify_playlist_name")
+            if playlist_name:
+                lines.append(f'Spotify playlist: {playlist_status} ("{playlist_name}").')
+            else:
+                lines.append(f"Spotify playlist: {playlist_status}.")
+
+        for warning in report.get("warnings", []):
+            lines.append(f"Warning: {warning}")
+        for error in report.get("errors", []):
+            if error != "No tracks found.":
+                lines.append(f"Issue: {error}")
+
+        if lines:
+            return "\n".join(lines)
         if self.display_output.strip():
             return "Run complete. Songs were printed in the browser output."
         return "Run complete."
+
+    def build_summary_kind_locked(self):
+        if "No tracks found." in self.display_output:
+            return "error"
+        if self.report.get("errors"):
+            return "error"
+        return "success"
+
+    def build_verbose_output_locked(self):
+        if not self.form.get("verbose"):
+            return ""
+        lines = []
+        for raw_line in strip_ansi(self.raw_output).splitlines():
+            cleaned = raw_line.strip()
+            if cleaned.startswith(WEB_STATUS_PREFIX):
+                continue
+            lines.append(raw_line)
+        return "\n".join(lines).strip()
 
     def artifact_url(self):
         if not self.generated_file or not self.generated_file.exists():
@@ -728,6 +816,7 @@ class InteractiveRunSession:
     def serialize(self):
         with self.lock:
             artifact_path = str(self.generated_file) if self.generated_file else None
+            artifact_name = self.generated_file.name if self.generated_file else None
             artifact_kind = None
             artifact_url = None
             if self.generated_file and self.generated_file.exists():
@@ -740,14 +829,17 @@ class InteractiveRunSession:
                 "finished": self.finished,
                 "exit_code": self.exit_code,
                 "output": self.display_output,
+                "verbose_output": self.build_verbose_output_locked(),
                 "status_feed": {
                     "phase": self.status_phase,
                     "lines": self.status_lines,
                     "summary": self.summary,
                     "kind": self.summary_kind,
                 },
+                "report": self.report,
                 "prompt": self.current_prompt,
                 "artifact_path": artifact_path,
+                "artifact_name": artifact_name,
                 "artifact_kind": artifact_kind,
                 "artifact_url": artifact_url,
                 "error": self.error,
@@ -816,6 +908,10 @@ def render_page(form, status="Ready."):
       border-radius: 10px;
       width: 100%;
       box-sizing: border-box;
+    }}
+    input[type="checkbox"] {{
+      width: auto;
+      padding: 0;
     }}
     .row {{
       display: flex;
@@ -910,6 +1006,7 @@ def render_page(form, status="Ready."):
       background: #faf8ef;
       color: #25372c;
       font-weight: 650;
+      white-space: pre-wrap;
     }}
     .summary-card.error {{
       border-color: #e0b4ad;
@@ -1041,7 +1138,7 @@ def render_page(form, status="Ready."):
 
       <div id="public-discovery-options-section">
         <h3 class="section-title">Public Discovery Settings</h3>
-        <p class="section-copy">Public discovery uses YouTube Music metadata only, so random non-music videos do not slip in. Defaults are tuned for a quick run.</p>
+        <p class="section-copy">Optional limits for public discovery.</p>
         <input type="hidden" id="discovery_mode" name="discovery_mode" value="YouTube Music discovery">
         <button type="button" class="ghost" id="advanced-discovery-toggle">Tweak discovery settings</button>
         <div class="grid hidden" id="advanced-discovery-fields" style="margin-top: 14px;">
@@ -1091,11 +1188,6 @@ def render_page(form, status="Ready."):
         </div>
       </div>
 
-      <div style="margin-top: 18px;">
-        <h3 class="section-title" style="margin-top: 0;">Song Links</h3>
-        <p class="section-copy" style="margin-bottom: 0;">Spotify search links and YouTube links are added automatically on every run.</p>
-      </div>
-
       <div id="output-format-section">
         <h3 class="section-title">Multi-song Output</h3>
         <p class="section-copy">If you request more than one song, you can keep it in the live terminal or generate a text or HTML file.</p>
@@ -1107,6 +1199,10 @@ def render_page(form, status="Ready."):
             <option{option(form['output_format'], 'txt')}>txt</option>
           </select>
         </div>
+      </div>
+
+      <div style="margin-top: 14px;">
+        <label><input type="checkbox" name="verbose"{checked('verbose')}> Verbose</label>
       </div>
 
       <div class="row" style="margin-top: 16px;">
@@ -1299,7 +1395,8 @@ def render_page(form, status="Ready."):
         artifactFrame.src = data.artifact_url;
         artifactFrame.classList.remove("hidden");
       }} else if (data.artifact_kind === "txt") {{
-        artifactNote.textContent = "Your text file is ready. Use the Open button above to open it.";
+        const fileName = data.artifact_name || "text file";
+        artifactNote.textContent = `TXT file "${{fileName}}" was generated. Use the Open button above to open it.`;
         artifactNote.classList.remove("hidden");
       }}
     }}
@@ -1371,8 +1468,10 @@ def render_page(form, status="Ready."):
     function renderSession(data) {{
       statusText.textContent = data.status || "Running...";
       renderStatusFeed(data);
-      terminalOutput.textContent = data.output || "";
-      terminalOutput.classList.toggle("hidden", !(data.finished && data.output && !data.artifact_url));
+      const verboseOutput = data.verbose_output || "";
+      terminalOutput.textContent = verboseOutput || data.output || "";
+      const shouldShowTerminal = Boolean(verboseOutput) || Boolean(data.finished && data.output && !data.artifact_url);
+      terminalOutput.classList.toggle("hidden", !shouldShowTerminal);
       terminalOutput.scrollTop = terminalOutput.scrollHeight;
       renderPrompt(data);
       renderArtifact(data);

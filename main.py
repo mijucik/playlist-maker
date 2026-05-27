@@ -21,7 +21,7 @@ from pathlib import Path
 import spotipy
 import spotipy.exceptions
 from spotipy.cache_handler import CacheHandler
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyClientCredentials, SpotifyOAuth
 from tqdm import tqdm
 from ytmusicapi import YTMusic
 
@@ -37,6 +37,7 @@ SCOPE = "user-read-private playlist-read-private playlist-modify-private playlis
 RANDOM_SONG_API_BASE_URL = "https://europe-west1-randommusicgenerator-34646.cloudfunctions.net/appV2"
 REQUIRED_SCOPE_SET = set(SCOPE.split())
 DEFAULT_PUBLIC_DISCOVERY_MODE = "youtube-music"
+SURPRISE_PUBLIC_DISCOVERY_MAX_ATTEMPTS = 5
 YOUTUBE_MUSIC_SEARCH_LIMIT = 20
 YOUTUBE_MUSIC_VIDEO_TYPES = {
     "MUSIC_VIDEO_TYPE_ATV",
@@ -49,9 +50,13 @@ SPOTIFY_MAX_RETRIES = 4
 SPOTIFY_MAX_AUTO_RETRY_AFTER_SECONDS = 120
 CURRENT_USER_PROFILE = None
 SPOTIFY_CLIENT = None
+SPOTIFY_SEARCH_CLIENT = None
 SPOTIFY_API_UNAVAILABLE_REASON = None
+SPOTIFY_SEARCH_UNAVAILABLE_REASON = None
 SPOTIFY_UNAVAILABLE_NOTICES = set()
 YOUTUBE_MUSIC_CLIENT = None
+RUN_REPORT = {}
+SPOTIFY_LINK_MATCHING_DISABLED_REASON = None
 
 
 class RunAborted(RuntimeError):
@@ -62,7 +67,7 @@ class SpotifyApiUnavailableError(RuntimeError):
     """Raised when Spotify API access is unavailable for this run."""
 
 
-def emit_web_status(phase, message, detail=None, level="info", reset=False, done=False):
+def emit_web_status(phase, message, detail=None, level="info", reset=False, done=False, report=None):
     if os.getenv("SPOTIFY_PICKER_WEB_STATUS") != "1":
         return
 
@@ -75,7 +80,41 @@ def emit_web_status(phase, message, detail=None, level="info", reset=False, done
     }
     if detail is not None:
         payload["detail"] = detail
+    if report is not None:
+        payload["report"] = report
     print(f"WEB_STATUS_JSON:{json.dumps(payload, ensure_ascii=False)}", flush=True)
+
+
+def reset_run_report():
+    global RUN_REPORT, SPOTIFY_LINK_MATCHING_DISABLED_REASON
+    RUN_REPORT = {
+        "warnings": [],
+        "errors": [],
+        "spotify_playlist_status": "not asked",
+        "links_added": False,
+        "spotify_exact_links": 0,
+        "spotify_search_links": 0,
+        "youtube_links": 0,
+        "surprise_attempts": [],
+    }
+    SPOTIFY_LINK_MATCHING_DISABLED_REASON = None
+
+
+def add_report_list_item(key, value):
+    if value and value not in RUN_REPORT.setdefault(key, []):
+        RUN_REPORT[key].append(value)
+
+
+def update_run_report(**updates):
+    for key, value in updates.items():
+        if key in {"warnings", "errors", "surprise_attempts"}:
+            existing = RUN_REPORT.setdefault(key, [])
+            for item in value if isinstance(value, list) else [value]:
+                if item and item not in existing:
+                    existing.append(item)
+        else:
+            RUN_REPORT[key] = value
+    emit_web_status("report", None, report=RUN_REPORT)
 
 
 class SecureTokenCacheHandler(CacheHandler):
@@ -480,6 +519,38 @@ def get_spotify_client(required=True, prompt_if_missing=None, context="this step
         if required:
             raise
         print_spotify_unavailable_notice(context, SPOTIFY_API_UNAVAILABLE_REASON)
+        return None
+
+
+def get_spotify_search_client(context="Spotify song matching"):
+    global SPOTIFY_SEARCH_CLIENT, SPOTIFY_SEARCH_UNAVAILABLE_REASON
+
+    if SPOTIFY_SEARCH_CLIENT is not None:
+        return SPOTIFY_SEARCH_CLIENT
+
+    if SPOTIFY_SEARCH_UNAVAILABLE_REASON:
+        return None
+
+    try:
+        client_id, client_secret, _redirect_uri = resolve_spotify_app_credentials(prompt_if_missing=False)
+        auth_manager = SpotifyClientCredentials(
+            client_id=client_id,
+            client_secret=client_secret,
+        )
+        SPOTIFY_SEARCH_CLIENT = RateLimitedSpotifyClient(
+            spotipy.Spotify(
+                auth_manager=auth_manager,
+                requests_session=False,
+            )
+        )
+        return SPOTIFY_SEARCH_CLIENT
+    except (RunAborted, SpotifyApiUnavailableError) as error:
+        SPOTIFY_SEARCH_UNAVAILABLE_REASON = str(error)
+        print_spotify_unavailable_notice(context, SPOTIFY_SEARCH_UNAVAILABLE_REASON)
+        return None
+    except Exception as error:
+        SPOTIFY_SEARCH_UNAVAILABLE_REASON = str(error)
+        print_spotify_unavailable_notice(context, SPOTIFY_SEARCH_UNAVAILABLE_REASON)
         return None
 
 
@@ -1062,8 +1133,25 @@ def find_youtube_url(song):
 
 
 def find_spotify_url(song):
+    global SPOTIFY_LINK_MATCHING_DISABLED_REASON
+
     if song.get('spotify_url'):
         return song.get('spotify_url'), song.get('spotify_found_exact_track', True)
+
+    if SPOTIFY_LINK_MATCHING_DISABLED_REASON:
+        return build_spotify_search_url(song), False
+
+    try:
+        spotify_match = resolve_song_on_spotify(song, suppress_errors=True)
+    except RunAborted as error:
+        SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
+        add_report_list_item("warnings", f"Spotify exact-link matching stopped early: {error}")
+        return build_spotify_search_url(song), False
+
+    if spotify_match and spotify_match.get('spotify_url'):
+        if spotify_match.get('spotify_uri'):
+            song['spotify_uri'] = spotify_match['spotify_uri']
+        return spotify_match['spotify_url'], spotify_match.get('spotify_found_exact_track', True)
 
     return build_spotify_search_url(song), False
 
@@ -1074,8 +1162,8 @@ def find_spotify_track_for_song(song):
 
     if song.get('spotify_url'):
         spotify_url = song['spotify_url']
-        track_id = spotify_url.rstrip('/').split('/')[-1].split('?')[0]
-        if track_id:
+        if "/track/" in spotify_url:
+            track_id = spotify_url.rstrip('/').split('/')[-1].split('?')[0]
             return f"spotify:track:{track_id}"
 
     spotify_match = resolve_song_on_spotify(song)
@@ -1086,21 +1174,47 @@ def find_spotify_track_for_song(song):
 
 
 def attach_platform_links(selected_songs, link_platform):
+    global SPOTIFY_LINK_MATCHING_DISABLED_REASON
+
     if link_platform in {'spotify', 'both'}:
-        emit_web_status("links", "Building Spotify search links...", reset=True)
-        print("Building Spotify links/search pages for the selected songs...")
+        emit_web_status("links", "Finding Spotify links...", reset=True)
+        print("Finding Spotify links/search pages for the selected songs...")
+        exact_count = 0
+        search_count = 0
         for song in tqdm(selected_songs, desc='Finding Spotify links', unit='song'):
-            spotify_url, found_exact_track = find_spotify_url(song)
+            if SPOTIFY_LINK_MATCHING_DISABLED_REASON:
+                spotify_url, found_exact_track = build_spotify_search_url(song), False
+            else:
+                try:
+                    spotify_url, found_exact_track = find_spotify_url(song)
+                except RunAborted as error:
+                    SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
+                    add_report_list_item("warnings", f"Spotify exact-link matching stopped early: {error}")
+                    spotify_url, found_exact_track = build_spotify_search_url(song), False
+
             song['spotify_url'] = spotify_url
             song['spotify_found_exact_track'] = found_exact_track
+            if found_exact_track:
+                exact_count += 1
+            else:
+                search_count += 1
+        update_run_report(
+            links_added=True,
+            spotify_exact_links=exact_count,
+            spotify_search_links=search_count,
+        )
 
     if link_platform in {'youtube', 'both'}:
         emit_web_status("links", "Preparing YouTube Music links...")
         print("Looking up YouTube links for the selected songs...")
+        youtube_count = 0
         for song in tqdm(selected_songs, desc='Finding YouTube links', unit='song'):
             youtube_url, found_exact_video = find_youtube_url(song)
             song['youtube_url'] = youtube_url
             song['youtube_found_exact_video'] = found_exact_video
+            if youtube_url:
+                youtube_count += 1
+        update_run_report(youtube_links=youtube_count)
     emit_web_status("links", "Links are ready.", done=True)
 
 
@@ -1512,11 +1626,7 @@ def build_spotify_search_queries(song):
 
 
 def resolve_song_on_spotify(song, suppress_errors=False):
-    spotify_client = get_spotify_client(
-        required=False,
-        prompt_if_missing=False,
-        context="Spotify song matching",
-    )
+    spotify_client = get_spotify_search_client(context="Spotify song matching")
     if spotify_client is None:
         return None
 
@@ -1549,7 +1659,7 @@ def resolve_song_on_spotify(song, suppress_errors=False):
         spotify_match = {
             'spotify_url': track.get('external_urls', {}).get('spotify'),
             'spotify_uri': track.get('uri'),
-            'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')) and is_exact_query,
+            'spotify_found_exact_track': bool(track.get('external_urls', {}).get('spotify')),
         }
         SPOTIFY_MATCH_CACHE[song_key] = spotify_match
         return spotify_match
@@ -1599,6 +1709,7 @@ def fetch_songs_from_public_playlists_by_keywords(
 def create_spotify_playlist(selected_songs):
     if not spotify_app_credentials_configured():
         print("Spotify playlist creation is unavailable because no Spotify app credentials are configured for this run.")
+        update_run_report(spotify_playlist_status="skipped: Spotify credentials not configured")
         return
 
     # Prompt for playlist name
@@ -1617,6 +1728,7 @@ def create_spotify_playlist(selected_songs):
 
     if not track_uris:
         print("No tracks were found to add, so the playlist was not created.")
+        update_run_report(spotify_playlist_status="failed: no Spotify tracks found", spotify_playlist_name=playlist_name)
         return
 
     spotify_client = get_spotify_client(required=True, prompt_if_missing=True, context="Spotify playlist creation")
@@ -1625,9 +1737,15 @@ def create_spotify_playlist(selected_songs):
     try:
         playlist = spotify_client.current_user_playlist_create(playlist_name, public=False)
         print(f"Playlist '{playlist_name}' created successfully.")
+        update_run_report(spotify_playlist_status="created", spotify_playlist_name=playlist_name)
     except spotipy.exceptions.SpotifyException as e:
         abort_if_unreasonable_rate_limit_error(e)
         print(f"Error creating playlist: {e}")
+        update_run_report(
+            spotify_playlist_status="failed: could not create playlist",
+            spotify_playlist_name=playlist_name,
+            errors=f"Spotify playlist creation failed: {e}",
+        )
         if getattr(e, "http_status", None) == 403:
             user_id = (CURRENT_USER_PROFILE or {}).get('id', 'unknown')
             print("Spotify rejected playlist creation with HTTP 403.")
@@ -1652,9 +1770,15 @@ def create_spotify_playlist(selected_songs):
             batch = track_uris[i:i+100]
             spotify_client.playlist_add_items(playlist['id'], batch)
         print(f"Added {len(track_uris)} tracks to '{playlist_name}'.")
+        update_run_report(spotify_playlist_status="created", spotify_playlist_name=playlist_name)
     except spotipy.exceptions.SpotifyException as e:
         abort_if_unreasonable_rate_limit_error(e)
         print(f"Error adding tracks to playlist: {e}")
+        update_run_report(
+            spotify_playlist_status="failed: could not add tracks",
+            spotify_playlist_name=playlist_name,
+            errors=f"Spotify playlist add failed: {e}",
+        )
         if getattr(e, "http_status", None) == 429:
             print(
                 "Spotify rate-limited the playlist add step even after retries. "
@@ -1944,6 +2068,60 @@ def fetch_public_discovery_with_auto_fallback(
         return song_list, effective_mode
 
 
+def random_surprise_keywords(keyword_count=3):
+    if not EMOTIONS_GENRES:
+        return []
+    return random.sample(EMOTIONS_GENRES, min(keyword_count, len(EMOTIONS_GENRES)))
+
+
+def fetch_surprise_public_discovery_with_retries(
+    max_playlists,
+    max_songs,
+    max_tracks_per_playlist,
+    min_playlist_size,
+    max_playlist_size,
+    discovery_mode,
+):
+    attempted_keywords = []
+    effective_mode = discovery_mode
+
+    for attempt_number in range(1, SURPRISE_PUBLIC_DISCOVERY_MAX_ATTEMPTS + 1):
+        keywords = random_surprise_keywords(3)
+        attempted_keywords.append(keywords)
+        update_run_report(surprise_attempts=[" + ".join(keywords)])
+        print(f"Randomly selected emotions/genres (attempt {attempt_number}): {', '.join(keywords)}")
+        emit_web_status(
+            "search",
+            f"Trying Surprise Me keywords {attempt_number}/{SURPRISE_PUBLIC_DISCOVERY_MAX_ATTEMPTS}: {', '.join(keywords)}",
+            reset=attempt_number == 1,
+            report={"keywords": keywords, "surprise_attempts": [" + ".join(keywords)]},
+        )
+
+        song_list, effective_mode = fetch_public_discovery_with_auto_fallback(
+            keywords,
+            max_playlists=max_playlists,
+            max_songs=max_songs,
+            max_tracks_per_playlist=max_tracks_per_playlist,
+            min_playlist_size=min_playlist_size,
+            max_playlist_size=max_playlist_size,
+            discovery_mode=effective_mode,
+        )
+        if song_list:
+            return song_list, effective_mode, keywords, attempted_keywords
+
+        print("No songs found for that Surprise Me keyword set. Trying another set...")
+
+    attempted_summary = [" + ".join(keywords) for keywords in attempted_keywords]
+    update_run_report(
+        errors=(
+            "No tracks found after trying these Surprise Me keyword sets: "
+            + "; ".join(attempted_summary)
+        ),
+        surprise_attempts=attempted_summary,
+    )
+    return [], effective_mode, attempted_keywords[-1] if attempted_keywords else [], attempted_keywords
+
+
 def build_no_spotify_surprise_fallback_source_description(keywords):
     return f"Fallback Surprise Me (YouTube Music discovery for {', '.join(keywords)})"
 
@@ -1990,10 +2168,12 @@ def maybe_switch_personal_source_to_no_spotify_fallback(num_songs, failure_reaso
 
 
 def main():
+    reset_run_report()
     print_project_summary()
 
     num_songs = prompt_for_num_songs()
     print(f"Number of songs to fetch: {num_songs}")
+    update_run_report(requested_count=num_songs)
 
     source_choice = prompt_for_source_choice()
 
@@ -2006,6 +2186,7 @@ def main():
     keywords = None
     surprise_song_list = None
     public_discovery_mode = DEFAULT_PUBLIC_DISCOVERY_MODE
+    surprise_public_discovery = False
 
     if source_choice == '1':
         playlist_visibility_filter = prompt_for_visibility_filter()
@@ -2059,6 +2240,13 @@ def main():
             cache_file = None
             source_description = f"Public Discovery by Keywords/Phrases ({describe_public_discovery_mode(public_discovery_mode)})"
             keywords = prompt_for_keywords()
+            update_run_report(
+                source=source_description,
+                keywords=keywords,
+                max_playlists=max_playlists,
+                min_playlist_size=min_playlist_size,
+                max_playlist_size=max_playlist_size,
+            )
         elif source_choice == '6':
             cache_file = None
             surprise_mode = prompt_for_surprise_mode()
@@ -2070,34 +2258,53 @@ def main():
                 max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
 
                 print("Surprise Me option selected...")
-                random_keywords = random.sample(EMOTIONS_GENRES, 3)
-                print(f"Randomly selected emotions/genres: {', '.join(random_keywords)}")
-                keywords = random_keywords
+                surprise_public_discovery = True
                 source_description = f"Surprise Me (Random Emotions/Genres via {describe_public_discovery_mode(public_discovery_mode)})"
+                update_run_report(
+                    source=source_description,
+                    max_playlists=max_playlists,
+                    min_playlist_size=min_playlist_size,
+                    max_playlist_size=max_playlist_size,
+                )
             elif surprise_mode == '2':
                 source_description = 'Surprise Me (random-song.com Default Random Config)'
+                update_run_report(source=source_description)
                 surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="default-config")
             elif surprise_mode == '3':
                 options = fetch_random_song_generator_options()
                 custom_config = prompt_for_random_song_generator_config(options)
                 source_description = 'Surprise Me (random-song.com Custom Config)'
+                update_run_report(source=source_description, random_song_config=custom_config)
                 surprise_song_list = fetch_songs_from_random_song_generator(num_songs, mode="custom-config", config=custom_config)
 
-    if source_choice == '5' or (source_choice == '6' and keywords is not None):
+    if source_choice == '5' or surprise_public_discovery:
         # Handle option 5 and 6 without caching
-        song_list, effective_discovery_mode = fetch_public_discovery_with_auto_fallback(
-            keywords,
-            max_playlists=max_playlists,
-            max_songs=max_songs,
-            max_tracks_per_playlist=max_tracks_per_playlist,
-            min_playlist_size=min_playlist_size,
-            max_playlist_size=max_playlist_size,
-            discovery_mode=public_discovery_mode,
-        )
+        if surprise_public_discovery:
+            song_list, effective_discovery_mode, keywords, attempted_keywords = fetch_surprise_public_discovery_with_retries(
+                max_playlists=max_playlists,
+                max_songs=max_songs,
+                max_tracks_per_playlist=max_tracks_per_playlist,
+                min_playlist_size=min_playlist_size,
+                max_playlist_size=max_playlist_size,
+                discovery_mode=public_discovery_mode,
+            )
+            update_run_report(keywords=keywords)
+        else:
+            song_list, effective_discovery_mode = fetch_public_discovery_with_auto_fallback(
+                keywords,
+                max_playlists=max_playlists,
+                max_songs=max_songs,
+                max_tracks_per_playlist=max_tracks_per_playlist,
+                min_playlist_size=min_playlist_size,
+                max_playlist_size=max_playlist_size,
+                discovery_mode=public_discovery_mode,
+            )
         if not song_list:
             print("No tracks found.")
+            update_run_report(errors="No tracks found.")
             return
         selected_songs = select_random_songs(song_list, num_songs)
+        update_run_report(selected_count=len(selected_songs), source=source_description, keywords=keywords)
         emit_web_status("select", f"Selected {len(selected_songs)} song(s).", reset=True, done=True)
         if effective_discovery_mode != public_discovery_mode:
             public_discovery_mode = effective_discovery_mode
@@ -2117,6 +2324,7 @@ def main():
             print("No tracks found.")
             return
         selected_songs = select_random_songs(surprise_song_list, num_songs)
+        update_run_report(selected_count=len(selected_songs), source=source_description)
         emit_web_status("select", f"Selected {len(selected_songs)} song(s).", reset=True, done=True)
         selected_playlists = []
     else:
@@ -2196,13 +2404,16 @@ def main():
         if song_list is not None:
             if not song_list:
                 print("No tracks found.")
+                update_run_report(errors="No tracks found.")
                 return
 
             selected_songs = select_random_songs(song_list, num_songs)
             if not selected_songs:
                 print("No tracks found.")
+                update_run_report(errors="No tracks found.")
                 return
             print(f"Selected {len(selected_songs)} songs.")
+            update_run_report(selected_count=len(selected_songs), source=source_description)
             emit_web_status("select", f"Selected {len(selected_songs)} song(s).", reset=True, done=True)
 
     num_songs = len(selected_songs)
@@ -2211,6 +2422,7 @@ def main():
     attach_platform_links(selected_songs, link_platform)
 
     if num_songs == 1:
+        update_run_report(output_format="terminal")
         # Output the single song
         random_song = selected_songs[0]
         print(f"\nHere is your song from {source_description}:\n1. {random_song['title']} by {random_song['artists']}")
@@ -2220,6 +2432,7 @@ def main():
     else:
         # Ask for file format or terminal output
         file_format = prompt_for_output_format()
+        update_run_report(output_format=file_format)
 
         if file_format == 'terminal':
             emit_web_status("output", "Printing songs in the browser summary...", reset=True)
@@ -2278,9 +2491,15 @@ def main():
                             f.write(f"{idx}. {song_title} by {song_artists}\n")
                             write_song_links_to_text_file(song, f, indent="   ")
                     print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
-                    emit_web_status("output", "Text file is ready.", done=True)
+                    update_run_report(
+                        artifact_path=abs_filepath,
+                        artifact_name=filename,
+                        artifact_kind="txt",
+                    )
+                    emit_web_status("output", f'TXT file "{filename}" was generated.', done=True)
                 except Exception as e:
                     print(f"Failed to write to file '{abs_filepath}': {e}")
+                    update_run_report(errors=f"TXT file generation failed: {e}")
                     emit_web_status("output", f"Could not write text file: {e}", level="error")
 
                 # Ask if user wants to open the file after .txt generation
@@ -2363,9 +2582,15 @@ def main():
                     with open(filepath, 'w', encoding='utf-8') as f:
                         f.write(html_content)
                     print(f"\n{num_songs} songs have been written to '{abs_filepath}'.\n")
-                    emit_web_status("output", "HTML file is ready.", done=True)
+                    update_run_report(
+                        artifact_path=abs_filepath,
+                        artifact_name=filename,
+                        artifact_kind="html",
+                    )
+                    emit_web_status("output", f'HTML file "{filename}" was generated.', done=True)
                 except Exception as e:
                     print(f"Failed to write to HTML file '{abs_filepath}': {e}")
+                    update_run_report(errors=f"HTML file generation failed: {e}")
                     emit_web_status("output", f"Could not write HTML file: {e}", level="error")
 
                 # Ask if user wants to open the file after .html generation
@@ -2391,6 +2616,12 @@ def main():
             create_spotify_playlist(selected_songs)
         except (RunAborted, SpotifyApiUnavailableError) as error:
             print(f"Skipping Spotify playlist creation because Spotify is unavailable right now: {error}")
+            update_run_report(
+                spotify_playlist_status="failed: Spotify unavailable",
+                errors=f"Spotify playlist creation skipped: {error}",
+            )
+    else:
+        update_run_report(spotify_playlist_status="skipped by user")
 
     if any(song.get('spotify_url') or song.get('youtube_url') for song in selected_songs):
         maybe_open_platform_links(selected_songs, link_platform)
