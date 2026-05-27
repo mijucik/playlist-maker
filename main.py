@@ -2656,7 +2656,7 @@ def main():
         if file_format == 'txt':
             # Generate text file
             try:
-                with open(filepath, 'w', encoding='utf-8') as f:
+                with open(filepath, 'w', encoding='utf-8-sig') as f:
                     f.write(f"Your Selected Songs from {source_description} (Generated on {date_str}):\n\n")
                     if source_choice == '4':
                         f.write(f"Selected from playlists:\n")
@@ -2735,18 +2735,18 @@ def main():
 </head>
 <body>
     <h1>Your Selected Songs</h1>
-    <p class="source">Source: {source_description}</p>
+    <p class="source">Source: {html.escape(source_description)}</p>
 """
                 if source_choice == '4':
-                    html_content += f"""    <p class="playlists">Selected from playlists: {', '.join(selected_playlists)}</p>
-"""
+                    playlists_escaped = ', '.join(html.escape(p) for p in selected_playlists)
+                    html_content += f'    <p class="playlists">Selected from playlists: {playlists_escaped}</p>\n'
                 html_content += f"""    <p class="date">Generated on {readable_date}</p>
     <ol>
 """
 
                 for song in selected_songs:
-                    song_title = song['title']
-                    song_artists = song['artists']
+                    song_title = html.escape(song['title'])
+                    song_artists = html.escape(song['artists'])
                     html_content += f"        <li>{song_title} by {song_artists}"
                     html_links = build_song_links_html(song)
                     if html_links:
