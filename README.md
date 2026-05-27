@@ -138,6 +138,7 @@ The app also tries to be conservative with Spotify API usage now:
 
 If Spotify says a retry window is over 2 minutes, the current run stops immediately instead of waiting.
 When that happens during public discovery, the app now switches to the no-Spotify-API fallback automatically when it can. For personal-playlist sources, it offers a no-Spotify-API Surprise Me fallback instead of forcing a full restart.
+The app also disables Spotipy's own long-lived HTTP retry behavior so these fallback decisions happen immediately instead of waiting on Spotify's full `Retry-After` window.
 
 ### 4. Create a Spotify app
 

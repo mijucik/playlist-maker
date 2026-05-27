@@ -3,6 +3,7 @@
 import getpass
 import html
 import json
+import logging
 import os
 import random
 import re
@@ -22,6 +23,8 @@ import spotipy.exceptions
 from spotipy.cache_handler import CacheHandler
 from spotipy.oauth2 import SpotifyOAuth
 from tqdm import tqdm
+
+logging.getLogger("spotipy").setLevel(logging.CRITICAL)
 
 
 APP_NAME = "spotify-scripts"
@@ -391,8 +394,14 @@ def create_spotify_client(prompt_if_missing=True):
             scope=SCOPE,
             open_browser=True,
             cache_handler=cache_handler,
+            requests_session=False,
         )
-        return RateLimitedSpotifyClient(spotipy.Spotify(auth_manager=auth_manager))
+        return RateLimitedSpotifyClient(
+            spotipy.Spotify(
+                auth_manager=auth_manager,
+                requests_session=False,
+            )
+        )
 
     spotify_client = build_client()
 
