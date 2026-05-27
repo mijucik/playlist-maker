@@ -343,7 +343,7 @@ def prompt_for_env_var(name, prompt_text, secret=False, default=None):
         entered = input(f"{prompt_text} [{default}]: ").strip()
         return entered or default
 
-    if secret:
+    if secret and os.getenv("SPOTIFY_PICKER_WEB_STATUS") != "1":
         return getpass.getpass(f"{prompt_text}: ").strip()
 
     return input(f"{prompt_text}: ").strip()
@@ -377,10 +377,11 @@ def prompt_for_link_platform():
             [
                 ("1", "No links"),
                 ("2", "YouTube only"),
-                ("3", "Spotify only"),
-                ("4", "Spotify and YouTube"),
+                ("3", "Spotify only (requires Spotify API access)"),
+                ("4", "Spotify and YouTube (Spotify requires API access)"),
             ],
         )
+        print("Spotify links require Spotify app credentials and optional Spotify API calls enabled.")
         choice = input("Enter 1, 2, 3, or 4 [2]: ").strip() or "2"
 
         if choice == "1":
@@ -562,17 +563,10 @@ def get_spotify_client(required=True, prompt_if_missing=None, context="this step
         return None
 
 
-def offer_spotify_credentials_in_terminal():
-    if getattr(offer_spotify_credentials_in_terminal, "_offered", False):
-        return
-    offer_spotify_credentials_in_terminal._offered = True
-
-    if os.getenv("SPOTIFY_PICKER_WEB_STATUS") == "1":
-        return  # web mode — never prompt here
-
+def offer_spotify_credentials_in_terminal(purpose="Spotify API access"):
     print("\nSpotify API credentials are not configured.")
-    print("Without them, Spotify links will be search pages rather than direct tracks.")
-    choice = input("Enter Spotify credentials now for exact links? (yes/no) [no]: ").strip().lower()
+    print(f"They are needed for {purpose}.")
+    choice = input("Enter Spotify credentials now? (yes/no) [no]: ").strip().lower()
     if choice not in {"yes", "y"}:
         return
 
@@ -1302,20 +1296,14 @@ def find_spotify_track_for_song(song, spotify_client=None):
 
 
 def get_spotify_client_for_playlist_creation():
-    if not spotify_app_credentials_configured() and os.getenv("SPOTIFY_PICKER_WEB_STATUS") == "1":
-        message = (
-            "Spotify playlist creation needs Spotify app credentials. "
-            "Add your Client ID and Client Secret in Spotify App Settings, then run again."
-        )
-        print(message)
-        update_run_report(
-            spotify_playlist_status="failed: Spotify credentials not configured",
-            errors=message,
-        )
-        emit_web_status("playlist", message, level="error", reset=True, done=True)
-        return None
-
     try:
+        if not spotify_app_credentials_configured():
+            offer_spotify_credentials_in_terminal(purpose="Spotify playlist creation")
+        if os.getenv("SPOTIFY_PICKER_WEB_STATUS") == "1":
+            print(
+                "Spotify may ask you to authorize in a browser. "
+                "If asked for the redirected URL, copy the full browser address after approving and paste it here."
+            )
         return get_spotify_client(
             required=True,
             prompt_if_missing=True,
@@ -2338,6 +2326,41 @@ def prompt_for_avoid_optional_spotify_api():
     )
 
 
+def ensure_spotify_link_access(link_platform):
+    global AVOID_OPTIONAL_SPOTIFY_API
+
+    if link_platform not in {'spotify', 'both'}:
+        return link_platform
+
+    if not optional_spotify_api_allowed():
+        print("Spotify links need optional Spotify API calls.")
+        allow_spotify_api = prompt_yes_no(
+            "Enable optional Spotify API calls for Spotify links? (yes/no) [yes]: ",
+            default="yes",
+        )
+        if allow_spotify_api:
+            AVOID_OPTIONAL_SPOTIFY_API = False
+            update_run_report(avoid_optional_spotify_api=False)
+        elif link_platform == 'both':
+            print("Continuing with YouTube links only.")
+            return 'youtube'
+        else:
+            print("Skipping Spotify link lookup.")
+            return None
+
+    if not spotify_app_credentials_configured():
+        print("Spotify links need Spotify app credentials.")
+        offer_spotify_credentials_in_terminal(purpose="exact Spotify links")
+        if not spotify_app_credentials_configured():
+            if link_platform == 'both':
+                print("Continuing with YouTube links only.")
+                return 'youtube'
+            print("Skipping Spotify link lookup.")
+            return None
+
+    return link_platform
+
+
 def prompt_for_playlist_scope():
     while True:
         print_cli_menu(
@@ -2853,6 +2876,7 @@ def main():
 
     num_songs = len(selected_songs)
     link_platform = prompt_for_link_platform()
+    link_platform = ensure_spotify_link_access(link_platform)
     if link_platform:
         attach_platform_links(selected_songs, link_platform)
     else:

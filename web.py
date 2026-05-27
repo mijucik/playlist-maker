@@ -37,6 +37,36 @@ AUTO_RESPONSE_PROMPTS = {
 }
 
 INTERACTIVE_PROMPTS = {
+    "Enter Spotify credentials now? (yes/no) [no]: ": {
+        "id": "enter_spotify_credentials",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
+    "Spotify Client ID: ": {
+        "id": "spotify_client_id",
+        "type": "text",
+        "choices": [],
+        "placeholder": "Spotify Client ID",
+    },
+    "Spotify Client Secret: ": {
+        "id": "spotify_client_secret",
+        "type": "text",
+        "choices": [],
+        "placeholder": "Spotify Client Secret",
+    },
+    "Enter the URL you were redirected to: ": {
+        "id": "spotify_redirected_url",
+        "type": "text",
+        "choices": [],
+        "placeholder": "Paste the full redirected URL from your browser",
+    },
+    "Enable optional Spotify API calls for Spotify links? (yes/no) [yes]: ": {
+        "id": "enable_optional_spotify_api",
+        "type": "choice",
+        "choices": ["yes", "no"],
+        "placeholder": "",
+    },
     "Do you want to check for updates? (yes/no): ": {
         "id": "check_updates",
         "type": "choice",
@@ -113,8 +143,15 @@ WEB_NOISE_EXACT_LINES = {
 WEB_NOISE_PREFIXES = (
     "Successfully authenticated as",
     "Spotify API credentials are not configured.",
-    "Without them, Spotify links",
+    "They are needed for",
+    "Spotify links need",
+    "Spotify may ask you to authorize",
+    "If asked for the redirected URL",
     "Enter Spotify credentials now",
+    "Spotify Client ID:",
+    "Spotify Client Secret:",
+    "Enter the URL you were redirected to:",
+    "Enable optional Spotify API calls",
     "Credentials saved.",
     "Loaded ",  # special-cased below: shows cache counts, hides startup emotion list
     "How many songs?",
@@ -1257,7 +1294,7 @@ def render_page(form, status="Ready."):
       </div>
       <div id="link-platform-section">
         <h3 class="section-title">Links</h3>
-        <p class="section-copy">Choose which links to include in the output. YouTube works without Spotify credentials. Exact Spotify links require Spotify credentials and optional Spotify API calls enabled.</p>
+        <p class="section-copy">YouTube links work without Spotify credentials. Spotify links require Spotify API access; the app will ask before using it.</p>
         <div class="grid">
           <label for="link_platform">Links to include</label>
           <select id="link_platform" name="link_platform">
