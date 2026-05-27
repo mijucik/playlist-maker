@@ -996,6 +996,9 @@ def render_page(form, status="Ready."):
       color: #334538;
       font-weight: 600;
     }}
+    .compact-card {{
+      padding-bottom: 18px;
+    }}
     button {{
       border: 0;
       border-radius: 999px;
@@ -1141,22 +1144,25 @@ def render_page(form, status="Ready."):
   <div class="page">
     <h1>Playlist Maker</h1>
 
-    <form method="post" action="/save" class="card" id="settings-form">
+    <form method="post" action="/save" class="card compact-card" id="settings-form">
       <h2>Spotify App Settings</h2>
-      <p class="section-copy">These are required for personal-playlist features and Spotify playlist creation. Public discovery and song-link output work without Spotify app credentials.</p>
-      <div class="grid">
-        <label for="client_id">Client ID</label>
-        <input id="client_id" name="client_id" value="{escape(form['client_id'])}">
+      <button type="button" class="ghost" id="spotify-settings-toggle">Tweak Spotify settings</button>
+      <div class="hidden" id="spotify-settings-fields" style="margin-top: 14px;">
+        <p class="section-copy">Needed for personal playlists, Spotify links, and Spotify playlist creation.</p>
+        <div class="grid">
+          <label for="client_id">Client ID</label>
+          <input id="client_id" name="client_id" value="{escape(form['client_id'])}">
 
-        <label for="client_secret">Client Secret</label>
-        <input id="client_secret" name="client_secret" value="{escape(form['client_secret'])}">
+          <label for="client_secret">Client Secret</label>
+          <input id="client_secret" name="client_secret" value="{escape(form['client_secret'])}">
 
-        <label for="redirect_uri">Redirect URI</label>
-        <input id="redirect_uri" name="redirect_uri" value="{escape(form['redirect_uri'])}">
-      </div>
-      <div class="row" style="margin-top: 14px;">
-        <button type="submit">Save Settings</button>
-        <button class="secondary" type="button" onclick="window.open('https://developer.spotify.com/dashboard/', '_blank')">Open Spotify Dashboard</button>
+          <label for="redirect_uri">Redirect URI</label>
+          <input id="redirect_uri" name="redirect_uri" value="{escape(form['redirect_uri'])}">
+        </div>
+        <div class="row" style="margin-top: 14px;">
+          <button type="submit">Save Settings</button>
+          <button class="secondary" type="button" onclick="window.open('https://developer.spotify.com/dashboard/', '_blank')">Open Spotify Dashboard</button>
+        </div>
       </div>
     </form>
 
@@ -1373,6 +1379,8 @@ def render_page(form, status="Ready."):
     const settingsClientId = document.getElementById("client_id");
     const settingsClientSecret = document.getElementById("client_secret");
     const settingsRedirectUri = document.getElementById("redirect_uri");
+    const spotifySettingsToggle = document.getElementById("spotify-settings-toggle");
+    const spotifySettingsFields = document.getElementById("spotify-settings-fields");
     const runClientId = document.getElementById("run-client-id");
     const runClientSecret = document.getElementById("run-client-secret");
     const runRedirectUri = document.getElementById("run-redirect-uri");
@@ -1670,6 +1678,11 @@ def render_page(form, status="Ready."):
     settingsClientId.addEventListener("input", syncSettingsIntoRunForm);
     settingsClientSecret.addEventListener("input", syncSettingsIntoRunForm);
     settingsRedirectUri.addEventListener("input", syncSettingsIntoRunForm);
+    spotifySettingsToggle.addEventListener("click", () => {{
+      const shouldShow = spotifySettingsFields.classList.contains("hidden");
+      spotifySettingsFields.classList.toggle("hidden", !shouldShow);
+      spotifySettingsToggle.textContent = shouldShow ? "Hide Spotify settings" : "Tweak Spotify settings";
+    }});
     sourceSelect.addEventListener("change", updateFlow);
     numSongsInput.addEventListener("input", updateFlow);
     playlistScopeSelect.addEventListener("change", updateFlow);
