@@ -525,6 +525,31 @@ def get_spotify_client(required=True, prompt_if_missing=None, context="this step
         return None
 
 
+def offer_spotify_credentials_in_terminal():
+    if getattr(offer_spotify_credentials_in_terminal, "_offered", False):
+        return
+    offer_spotify_credentials_in_terminal._offered = True
+
+    if os.getenv("SPOTIFY_PICKER_WEB_STATUS") == "1":
+        return  # web mode — never prompt here
+
+    print("\nSpotify API credentials are not configured.")
+    print("Without them, Spotify links will be search pages rather than direct tracks.")
+    choice = input("Enter Spotify credentials now for exact links? (yes/no) [no]: ").strip().lower()
+    if choice not in {"yes", "y"}:
+        return
+
+    try:
+        client_id = prompt_for_env_var("SPOTIPY_CLIENT_ID", "Spotify Client ID")
+        client_secret = prompt_for_env_var("SPOTIPY_CLIENT_SECRET", "Spotify Client Secret", secret=True)
+        save_spotify_app_config(client_id, client_secret, DEFAULT_REDIRECT_URI)
+        os.environ["SPOTIPY_CLIENT_ID"] = client_id
+        os.environ["SPOTIPY_CLIENT_SECRET"] = client_secret
+        print("Credentials saved.")
+    except Exception as err:
+        print(f"Could not save credentials: {err}")
+
+
 def get_spotify_search_client(context="Spotify song matching"):
     global SPOTIFY_SEARCH_CLIENT, SPOTIFY_SEARCH_UNAVAILABLE_REASON
 
@@ -533,6 +558,9 @@ def get_spotify_search_client(context="Spotify song matching"):
 
     if SPOTIFY_SEARCH_UNAVAILABLE_REASON:
         return None
+
+    if not spotify_app_credentials_configured():
+        offer_spotify_credentials_in_terminal()
 
     try:
         client_id, client_secret, _redirect_uri = resolve_spotify_app_credentials(prompt_if_missing=False)
@@ -1189,9 +1217,9 @@ def attach_platform_links(selected_songs, link_platform):
             else:
                 try:
                     spotify_url, found_exact_track = find_spotify_url(song)
-                except RunAborted as error:
+                except Exception as error:
                     SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
-                    add_report_list_item("warnings", f"Spotify exact-link matching stopped early: {error}")
+                    add_report_list_item("warnings", f"Spotify link lookup stopped: {error}")
                     spotify_url, found_exact_track = build_spotify_search_url(song), False
 
             song['spotify_url'] = spotify_url
@@ -1831,6 +1859,7 @@ def build_spotify_search_queries(song):
 
 
 def resolve_song_on_spotify(song, suppress_errors=False):
+    global SPOTIFY_LINK_MATCHING_DISABLED_REASON
     spotify_client = get_spotify_search_client(context="Spotify song matching")
     if spotify_client is None:
         return None
@@ -1847,6 +1876,11 @@ def resolve_song_on_spotify(song, suppress_errors=False):
             if not suppress_errors:
                 print(f"Could not search Spotify for {song.get('title', 'Unknown Title')} by {song.get('artists', 'Unknown Artist')}: {error}")
             continue
+        except Exception as error:
+            SPOTIFY_LINK_MATCHING_DISABLED_REASON = str(error)
+            if not suppress_errors:
+                print(f"Spotify search failed ({error}); switching to search-page links.")
+            break
 
         tracks = result.get('tracks', {}).get('items', [])
         if not tracks:
@@ -2138,6 +2172,12 @@ def prompt_for_max_playlists():
         if n > 0:
             return n
         print("Enter a positive number.")
+
+
+def prompt_for_max_songs_pool():
+    return prompt_for_optional_positive_number(
+        "Max songs to collect before selecting? (Enter to skip): "
+    )
 
 
 def prompt_for_keywords():
@@ -2433,7 +2473,8 @@ def main():
         if source_choice == '5':
             max_playlists = prompt_for_max_playlists()
             min_playlist_size, max_playlist_size = prompt_for_playlist_size_range()
-            max_songs = 20 * max_playlists
+            user_max_songs = prompt_for_max_songs_pool()
+            max_songs = user_max_songs if user_max_songs is not None else 20 * max_playlists
             max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
 
             # For option 5, we won't use cache
@@ -2454,7 +2495,8 @@ def main():
             if surprise_mode == '1':
                 max_playlists = prompt_for_max_playlists()
                 min_playlist_size, max_playlist_size = prompt_for_playlist_size_range()
-                max_songs = 20 * max_playlists
+                user_max_songs = prompt_for_max_songs_pool()
+                max_songs = user_max_songs if user_max_songs is not None else 20 * max_playlists
                 max_tracks_per_playlist = calculate_max_tracks_per_playlist(max_playlists, max_songs)
 
                 surprise_public_discovery = True

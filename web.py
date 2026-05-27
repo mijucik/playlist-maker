@@ -109,6 +109,10 @@ WEB_NOISE_EXACT_LINES = {
 }
 WEB_NOISE_PREFIXES = (
     "Successfully authenticated as",
+    "Spotify API credentials are not configured.",
+    "Without them, Spotify links",
+    "Enter Spotify credentials now",
+    "Credentials saved.",
     "Loaded ",  # special-cased below: shows cache counts, hides startup emotion list
     "How many songs?",
     "Source:",
@@ -122,6 +126,7 @@ WEB_NOISE_PREFIXES = (
     "Max playlists to search",
     "Min songs per playlist?",
     "Max songs per playlist?",
+    "Max songs to collect before selecting?",
     "Enter one or more words or phrases",
     "Output format (",
     "Text to match in playlist names:",
@@ -346,6 +351,7 @@ def build_default_form_data():
         "max_playlists": "15",
         "min_playlist_size": "",
         "max_playlist_size": "100",
+        "max_songs_pool": "",
         "discovery_mode": "YouTube Music discovery",
         "keywords": "",
         "surprise_mode": "Random emotions/genres via public discovery",
@@ -400,6 +406,7 @@ def build_initial_cli_answers(form):
         lines.append(form["max_playlists"].strip() or "15")
         lines.append(form["min_playlist_size"].strip())
         lines.append(form["max_playlist_size"].strip())
+        lines.append(form.get("max_songs_pool", "").strip())
         lines.append(form["keywords"].strip())
 
     elif source == "Surprise me":
@@ -414,6 +421,7 @@ def build_initial_cli_answers(form):
             lines.append(form["max_playlists"].strip() or "15")
             lines.append(form["min_playlist_size"].strip())
             lines.append(form["max_playlist_size"].strip())
+            lines.append(form.get("max_songs_pool", "").strip())
         elif surprise_choice == "3":
             lines.append(form["random_genre"].strip() or "random")
             lines.append(form["random_market"].strip() or "random")
@@ -468,11 +476,13 @@ def validate_form(form):
 
     min_size_raw = form["min_playlist_size"].strip()
     max_size_raw = form["max_playlist_size"].strip()
+    max_songs_pool_raw = form.get("max_songs_pool", "").strip()
     try:
         min_size = int(min_size_raw) if min_size_raw else None
         max_size = int(max_size_raw) if max_size_raw else None
+        max_songs_pool = int(max_songs_pool_raw) if max_songs_pool_raw else None
     except ValueError:
-        return "Playlist size limits must be positive integers when provided."
+        return "Playlist size limits and max songs must be positive integers when provided."
 
     if min_size is not None and min_size < 1:
         return "Minimum playlist size must be positive."
@@ -480,6 +490,8 @@ def validate_form(form):
         return "Maximum playlist size must be positive."
     if min_size is not None and max_size is not None and min_size > max_size:
         return "Minimum playlist size cannot be greater than maximum playlist size."
+    if max_songs_pool is not None and max_songs_pool < 1:
+        return "Max songs to collect must be a positive integer when provided."
 
     if form["output_format"] not in {"terminal", "html", "txt"}:
         return "Output format must be terminal, html, or txt."
@@ -1209,6 +1221,9 @@ def render_page(form, status="Ready."):
 
           <label for="max_playlist_size">Max playlist size</label>
           <input id="max_playlist_size" name="max_playlist_size" value="{escape(form['max_playlist_size'])}">
+
+          <label for="max_songs_pool">Max songs to collect</label>
+          <input id="max_songs_pool" name="max_songs_pool" placeholder="blank = 20 × max playlists" value="{escape(form.get('max_songs_pool', ''))}">
         </div>
       </div>
 
